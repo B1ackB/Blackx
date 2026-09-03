@@ -69,6 +69,7 @@ export function createRuntime(
 				audit: state,
 				sessions: state,
 				snapshots: state,
+				traces: state,
 				executions: state,
 			}),
 			state,

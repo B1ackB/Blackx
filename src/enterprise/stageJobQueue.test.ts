@@ -94,12 +94,21 @@ describe("InMemoryStageJobQueue", () => {
 		expect(recovered).toMatchObject({
 			leaseOwner: "worker-b",
 			failureCount: 1,
+			recoveryCount: 1,
+			totalRecoveryDetectionDelayMs: 1,
+			lastRecovery: {
+				previousLeaseOwner: "worker-a",
+				expiredAt: "2026-09-03T00:00:00.100Z",
+				recoveredAt: "2026-09-03T00:00:00.101Z",
+				detectionDelayMs: 1,
+			},
 			lastFailure: { code: "worker_lease_expired" },
 		});
 		expect(() => queue.ack(stale)).toThrowError(
 			expect.objectContaining<Partial<StageJobQueueError>>({ code: "lease_lost" }),
 		);
 		expect(queue.ack(recovered).status).toBe("completed");
+		expect(queue.metrics()).toMatchObject({ recoveries: 1, recoveryDetectionDelayMs: 1 });
 	});
 
 	it("dead-letters retry failures and an exhausted slice budget", () => {

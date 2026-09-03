@@ -108,6 +108,9 @@ function App() {
 	const [cronSchedules, setCronSchedules] = useState<CronScheduleView[]>([]);
 	const [proposal, setProposal] = useState<ProposalWorkspaceView>();
 	const [proposalBusy, setProposalBusy] = useState(false);
+	const [factKey, setFactKey] = useState("");
+	const [factValue, setFactValue] = useState("");
+	const [factUnit, setFactUnit] = useState("");
 	const [error, setError] = useState<string>();
 	const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -321,6 +324,49 @@ function App() {
 		}
 	};
 
+	const recordFact = async (event: FormEvent) => {
+		event.preventDefault();
+		if (!active || !proposal || proposalBusy || !factKey.trim() || !factValue.trim()) return;
+		setProposalBusy(true);
+		setError(undefined);
+		try {
+			setProposal(await client.recordProposalFact(
+				active.conversationId,
+				`fact-${crypto.randomUUID()}`,
+				{
+					key: factKey.trim(),
+					value: factValue.trim(),
+					unit: factUnit.trim() || undefined,
+				},
+			));
+			setFactKey("");
+			setFactValue("");
+			setFactUnit("");
+		} catch (reason) {
+			setError(errorMessage(reason));
+		} finally {
+			setProposalBusy(false);
+		}
+	};
+
+	const resolveFact = async (key: string, decision: "verified" | "rejected") => {
+		if (!active || proposalBusy) return;
+		setProposalBusy(true);
+		setError(undefined);
+		try {
+			setProposal(await client.resolveProposalFact(
+				active.conversationId,
+				key,
+				`fact-decision-${crypto.randomUUID()}`,
+				decision,
+			));
+		} catch (reason) {
+			setError(errorMessage(reason));
+		} finally {
+			setProposalBusy(false);
+		}
+	};
+
 	const onSubmit = (event: FormEvent) => {
 		event.preventDefault();
 		void send(draft);
@@ -335,6 +381,7 @@ function App() {
 	const hasUserMessage = Boolean(active?.messages.some((message) => message.role === "user"));
 	const content = proposalContent(proposal?.artifact?.content);
 	const evaluation = evaluationReport(proposal?.evaluation?.report);
+	const facts = Object.values(proposal?.state.facts ?? {}).sort((left, right) => left.key.localeCompare(right.key));
 	const proposalRunning = proposal?.state.stageStatus === "running" && proposal.job?.status !== "dead_letter" ||
 		proposal?.state.stageStatus === "evaluating" ||
 		proposal?.job?.status === "queued" ||
@@ -530,6 +577,55 @@ function App() {
 									<div><dt>版本</dt><dd>{proposal.state.currentProposal?.version ?? "—"}</dd></div>
 									<div><dt>队列</dt><dd>{proposal.job?.status ?? "—"}</dd></div>
 								</dl>
+							</section>
+
+							<section className="proposal-section facts-card">
+								<div className="section-title">
+									<strong>Field Facts</strong>
+									<span>{facts.length}</span>
+								</div>
+								{facts.map((fact) => (
+									<div className="fact-row" key={`${fact.key}-${fact.version}`}>
+										<div>
+											<code>{fact.key}@v{fact.version}</code>
+											<strong>{String(fact.value)}{fact.unit ? ` ${fact.unit}` : ""}</strong>
+											<small>{fact.sourceType} · {fact.status}</small>
+										</div>
+										{(fact.status === "suggested" || fact.status === "unverified") && (
+											<div className="fact-actions">
+												<button onClick={() => void resolveFact(fact.key, "rejected")} disabled={proposalBusy || proposalRunning}>拒绝</button>
+												<button onClick={() => void resolveFact(fact.key, "verified")} disabled={proposalBusy || proposalRunning}>确认</button>
+											</div>
+										)}
+									</div>
+								))}
+								<form className="fact-form" onSubmit={(event) => void recordFact(event)}>
+									<input
+										value={factKey}
+										onChange={(event) => setFactKey(event.target.value)}
+										placeholder="字段，例如 task.goal"
+										aria-label="Fact 字段"
+									/>
+									<input
+										value={factValue}
+										onChange={(event) => setFactValue(event.target.value)}
+										placeholder="值"
+										aria-label="Fact 值"
+									/>
+									<input
+										value={factUnit}
+										onChange={(event) => setFactUnit(event.target.value)}
+										placeholder="单位（可选）"
+										aria-label="Fact 单位"
+									/>
+									<button
+										type="submit"
+										disabled={proposalBusy || proposalRunning || !factKey.trim() || !factValue.trim()}
+									>
+										记录候选
+									</button>
+								</form>
+								<small>模型或用户输入只能形成候选；确认后才成为 verified。</small>
 							</section>
 
 							{content && (

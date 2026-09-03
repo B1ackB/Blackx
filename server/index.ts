@@ -28,6 +28,7 @@ import { BackgroundTaskApiController } from "./workers/backgroundTaskApi";
 import { CronDispatcher } from "./workers/cronScheduler";
 import { CronApiController } from "./workers/cronApi";
 import { ProposalWorkspaceApiController } from "./enterprise/proposalWorkspaceApi";
+import { researchSourceTool } from "./runtime/researchTools";
 
 const workingDirectory = resolve(process.cwd());
 const port = Number(process.env.BLACKX_PORT ?? 5173);
@@ -59,7 +60,7 @@ const cronScheduleStore = new FileCronScheduleStore(
 	resolve(process.env.BLACKX_CRON_SCHEDULE_PATH ?? ".blackx-data/cron-schedules.json"),
 );
 const services = createRuntime(process.env, {
-	tools: createAutomationTools(stageJobQueue, cronScheduleStore),
+	tools: [...createAutomationTools(stageJobQueue, cronScheduleStore), researchSourceTool],
 	autonomouslyApprovedTools: automationWriteToolNames,
 });
 const { runtime, state: agentState } = services;
@@ -362,9 +363,66 @@ const server = createServer(async (request, response) => {
 		return;
 	}
 
+	const conversationTraceMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/traces$/);
+	if (request.method === "GET" && conversationTraceMatch) {
+		let conversationId: string;
+		try {
+			conversationId = decodeURIComponent(conversationTraceMatch[1]);
+		} catch {
+			json(response, 400, { code: "invalid_conversation_id" });
+			return;
+		}
+		const result = conversationApi.traces(conversationApiContext(request), conversationId);
+		json(response, result.status, result.body);
+		return;
+	}
+
 	const conversationProposalApprovalMatch = url.pathname.match(
 		/^\/api\/conversations\/([^/]+)\/proposal\/approval$/,
 	);
+	const conversationFactDecisionMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/proposal\/facts\/([^/]+)\/decision$/,
+	);
+	if (request.method === "POST" && conversationFactDecisionMatch) {
+		try {
+			const result = proposalWorkspaceApi.resolveFact(
+				conversationApiContext(request),
+				decodeURIComponent(conversationFactDecisionMatch[1]),
+				decodeURIComponent(conversationFactDecisionMatch[2]),
+				await readJson(request),
+			);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
+		return;
+	}
+
+	const conversationFactsMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/proposal\/facts$/,
+	);
+	if (request.method === "POST" && conversationFactsMatch) {
+		try {
+			const result = proposalWorkspaceApi.recordFact(
+				conversationApiContext(request),
+				decodeURIComponent(conversationFactsMatch[1]),
+				await readJson(request),
+			);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
+		return;
+	}
+
 	if (request.method === "POST" && conversationProposalApprovalMatch) {
 		try {
 			const result = proposalWorkspaceApi.resolveApproval(

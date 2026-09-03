@@ -104,7 +104,7 @@ function isEventData(value: Record<string, unknown>): boolean {
 				["suggested", "unverified", "verified", "rejected"].includes(
 					String(value.status),
 				) &&
-				["user_input", "enterprise_source", "human_confirmation"].includes(
+				["user_input", "model_output", "enterprise_source", "human_confirmation"].includes(
 					String(value.sourceType),
 				) &&
 				isString(value.sourceRef)

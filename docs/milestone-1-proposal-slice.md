@@ -1,8 +1,13 @@
-# M1：可恢复 Proposal 纵向切片
+# 历史文档：可恢复 Proposal 纵向切片
+
+状态：Superseded as M1 / Retained as Print Domain Reference
+更新日期：2026-09-03
+
+本文件保存已实现的 Print Proposal 纵向切片、测试证据和未完成领域工作。它不再定义通用 M1 的完成条件。当前 M1 见 [`milestone-1-durable-runtime.md`](milestone-1-durable-runtime.md)，当前 M2 见 [`milestone-2-product-slice.md`](milestone-2-product-slice.md)。
 
 > Runtime 基线已切换为自研 `AgentRuntimePort`，详见 [`ADR-0001`](adr/0001-self-owned-agent-core.md)。
 
-状态：In Progress
+原状态：In Progress
 前置条件：M0 自研 Agent Core 的相关 Contract 与离线回归通过
 
 ## 1. 用户结果
@@ -234,11 +239,12 @@ M1 的 ContextEngine 可以很小，但不能跳过：
 - 租约心跳续期、单主机 SQLite Adapter 和 memory/SQLite 多 Worker Contract Test
 - Tenant/Workspace 隔离的 Queue 指标、Operator-only DLQ 查询与带 Actor/原因/乐观并发的 redrive
 - Web 对话面通过同源服务端编排入口贯通 Conversation 快照 → Proposal Run → 后台 Worker → Artifact Version → Deterministic Evaluation → Approval A → Stage Gate；浏览器不接触 Command/Worker Token
+- 通用字段级 Fact 生命周期已接入同源 API 与 Web：候选写入、版本递增、来源/Actor/时间、人工确认或拒绝，以及依赖 Artifact/Approval 的定向失效
 
 当前证据：
 
 ```text
-offline tests: 129 passed
+offline tests: 132 passed
 typecheck and production build: passed
 fixed offline Print Eval: passed
 protected HTTP command/query smoke: passed
@@ -262,4 +268,4 @@ self-owned Agent Core: no Codex SDK runtime dependency
 - Stage Job SQLite Adapter 只覆盖单主机多 Worker；多主机分布式 Queue、生产 Event Store、并发 Dispatcher ownership、Outbox 清理与告警仍未完成
 - Agent-managed 会话 Background Task 与有限 Cron 已实现；任意脚本任务、Sub-agent 与 Agent Teams 尚未实现。Sub-agent/Teams 必须先定义独立 Session、目标、权限、预算和聚合 Contract，并用固定 Eval 证明优于单 Agent Baseline
 
-因此 M1 仍是 `In Progress`，不能标记为完成或生产就绪。
+因此该 Print Proposal Domain Slice 仍未完成自己的领域 Gate；这不改变通用 [`M1 Durable Single-Agent Runtime`](milestone-1-durable-runtime.md) 已冻结的状态，也不能据此宣称 Print 产品生产就绪。

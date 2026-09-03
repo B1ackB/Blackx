@@ -63,6 +63,8 @@ class FileStageJobQueueStorage implements StageJobQueueStorage {
 					...job,
 					redriveCount: job.redriveCount ?? 0,
 					totalFailureCount: job.totalFailureCount ?? job.failureCount ?? 0,
+					recoveryCount: job.recoveryCount ?? 0,
+					totalRecoveryDetectionDelayMs: job.totalRecoveryDetectionDelayMs ?? 0,
 				}
 				: job);
 			if (!jobs.every(isStageJob)) throw new Error("invalid_stage_job_queue");

@@ -13,6 +13,7 @@ import { SkillRegistry } from "../../src/agent/skills";
 import { AgentStateStoreError, type ContextSnapshotRecord } from "../../src/agent/state";
 import { FileAgentStateStore } from "./fileAgentStateStore";
 import { BlackxAgentRuntime } from "./agentRuntime";
+import type { RuntimeTraceRecord } from "../../src/runtime/contracts";
 
 const directories: string[] = [];
 const scope = {
@@ -214,6 +215,62 @@ describe("FileAgentStateStore", () => {
 
 		expect(() => state.append(event)).not.toThrow();
 		expect(() => state.append(event)).not.toThrow();
+	});
+
+	it("persists tenant-scoped Runtime traces idempotently", () => {
+		const { root, state } = store();
+		const trace: RuntimeTraceRecord = {
+			schemaVersion: "runtime-trace.v1",
+			tenantId: scope.tenantId,
+			workspaceId: scope.workspaceId,
+			runId: scope.runId,
+			stageId: "research",
+			actorId: "eval-runner",
+			executionId: "execution-trace",
+			idempotencyKey: "turn-trace",
+			status: "completed",
+			startedAt: "2026-09-03T00:00:00.000Z",
+			completedAt: "2026-09-03T00:00:01.000Z",
+			durationMs: 1_000,
+			sessionId: scope.sessionId,
+			events: [{ type: "turn.started" }],
+		};
+		state.putTrace(trace);
+		expect(state.putTrace(trace)).toEqual(trace);
+		expect(new FileAgentStateStore(root).listTraces(scope)).toEqual([trace]);
+		expect(state.listTraces({ ...scope, tenantId: "tenant-b" })).toEqual([]);
+	});
+
+	it("normalizes undefined optional Runtime event fields before persistence", () => {
+		const { root, state } = store();
+		state.putTrace({
+			schemaVersion: "runtime-trace.v1",
+			tenantId: scope.tenantId,
+			workspaceId: scope.workspaceId,
+			runId: scope.runId,
+			stageId: "research",
+			actorId: "eval-runner",
+			executionId: "execution-tool-trace",
+			idempotencyKey: "turn-tool-trace",
+			status: "completed",
+			startedAt: "2026-09-03T00:00:00.000Z",
+			completedAt: "2026-09-03T00:00:01.000Z",
+			durationMs: 1_000,
+			events: [{
+				type: "tool.completed",
+				tool: "research_source_read",
+				toolCallId: "read-source",
+				risk: "read",
+				status: "succeeded",
+				failureCode: undefined,
+				durationMs: 1,
+				resultTruncated: false,
+				replayed: false,
+			}],
+		});
+
+		const [trace] = new FileAgentStateStore(root).listTraces(scope);
+		expect(trace?.events[0]).not.toHaveProperty("failureCode");
 	});
 
 	it("fails closed on corrupt Session data", () => {

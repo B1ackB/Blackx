@@ -4,6 +4,7 @@ import type {
 	AgentToolExecutionRecord,
 	AgentToolExecutionStore,
 } from "./contracts";
+import type { RuntimeTraceRecord, RuntimeTraceStore } from "../runtime/contracts";
 
 export interface AgentSessionScope {
 	tenantId: string;
@@ -83,10 +84,28 @@ function toolExecutionKey(key: AgentToolExecutionKey): string {
 	return JSON.stringify([key.tenantId, key.workspaceId, key.tool, key.idempotencyKey]);
 }
 
-export class InMemoryAgentStateStore implements AgentSessionStore, ContextSnapshotStore, AgentToolExecutionStore {
+export class InMemoryAgentStateStore implements AgentSessionStore, ContextSnapshotStore, AgentToolExecutionStore, RuntimeTraceStore {
 	private readonly sessions = new Map<string, AgentSessionState>();
 	private readonly snapshots = new Map<string, ContextSnapshotRecord>();
 	private readonly toolExecutions = new Map<string, AgentToolExecutionRecord>();
+	private readonly traces = new Map<string, RuntimeTraceRecord>();
+
+	putTrace(trace: RuntimeTraceRecord): RuntimeTraceRecord {
+		const key = JSON.stringify([trace.tenantId, trace.workspaceId, trace.runId, trace.executionId]);
+		const existing = this.traces.get(key);
+		if (existing && JSON.stringify(existing) !== JSON.stringify(trace)) {
+			throw new AgentStateStoreError("conflict", "Runtime Trace identity conflict");
+		}
+		this.traces.set(key, structuredClone(trace));
+		return structuredClone(trace);
+	}
+
+	listTraces(scope: { tenantId: string; workspaceId: string; runId: string }): RuntimeTraceRecord[] {
+		return [...this.traces.values()]
+			.filter((trace) => trace.tenantId === scope.tenantId && trace.workspaceId === scope.workspaceId && trace.runId === scope.runId)
+			.sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+			.map((trace) => structuredClone(trace));
+	}
 
 	load(scope: AgentSessionScope): AgentSessionState {
 		const state = this.sessions.get(key(scope));

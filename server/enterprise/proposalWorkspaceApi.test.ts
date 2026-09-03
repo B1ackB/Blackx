@@ -109,6 +109,11 @@ describe("ProposalWorkspaceApiController", () => {
 		const repeated = controller.start(context, conversationId, { requestId: "proposal-request-1" });
 		expect(proposal(repeated).state.aggregateVersion).toBe(proposal(started).state.aggregateVersion);
 		expect(queue.list()).toHaveLength(1);
+		expect(controller.recordFact(context, conversationId, {
+			requestId: "fact-while-running",
+			key: "task.goal",
+			value: "unsafe concurrent update",
+		}).status).toBe(409);
 
 		expect(await scheduler.runNext()).toMatchObject({ status: "completed" });
 		const waiting = controller.get(context, conversationId);
@@ -133,6 +138,52 @@ describe("ProposalWorkspaceApiController", () => {
 			status: "completed",
 			stageStatus: "passed",
 			approval: { status: "approved", artifactVersion: 1 },
+		});
+	});
+
+	it("records and resolves field Facts after a Worker slice, then invalidates only the dependent Artifact", async () => {
+		const { controller, conversationId, scheduler } = harness();
+		controller.start(context, conversationId, { requestId: "proposal-for-facts" });
+		expect(await scheduler.runNext()).toMatchObject({ status: "completed" });
+
+		const recorded = controller.recordFact(context, conversationId, {
+			requestId: "fact-request-1",
+			key: "task.goal",
+			value: "Create a reviewed proposal",
+		});
+		expect(proposal(recorded).state).toMatchObject({
+			stageStatus: "revision_required",
+			currentProposal: { freshness: "stale" },
+			approval: { status: "superseded" },
+			facts: {
+				"task.goal": {
+					version: 1,
+					status: "unverified",
+					sourceType: "user_input",
+					recordedBy: context.actorId,
+				},
+			},
+		});
+		const repeated = controller.recordFact(context, conversationId, {
+			requestId: "fact-request-1",
+			key: "task.goal",
+			value: "Create a reviewed proposal",
+		});
+		expect(proposal(repeated).state.aggregateVersion).toBe(proposal(recorded).state.aggregateVersion);
+		expect(controller.recordFact(context, conversationId, {
+			requestId: "fact-request-1",
+			key: "task.goal",
+			value: "Conflicting value",
+		}).status).toBe(409);
+
+		const verified = controller.resolveFact(context, conversationId, "task.goal", {
+			requestId: "fact-decision-1",
+			decision: "verified",
+		});
+		expect(proposal(verified).state.facts["task.goal"]).toMatchObject({
+			version: 2,
+			status: "verified",
+			sourceType: "human_confirmation",
 		});
 	});
 

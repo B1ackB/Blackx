@@ -149,6 +149,77 @@ describe("ProposalRunEngine", () => {
 		});
 	});
 
+	it("records a candidate Fact and requires an authoritative resolution source", () => {
+		const { engine } = harness();
+		engine.create(command("create-facts", 0));
+		const started = engine.startProposal(command("start-facts", 1));
+		const candidate = engine.recordFactVersion({
+			...command("record-goal", started.aggregateVersion),
+			factKey: "task.goal",
+			factVersion: 1,
+			value: "Summarize a repository",
+			status: "unverified",
+			sourceType: "user_input",
+			sourceRef: "message-1",
+		});
+		const verified = engine.resolveFact({
+			...command("verify-goal", candidate.aggregateVersion),
+			factKey: "task.goal",
+			decision: "verified",
+			sourceRef: "confirmation-1",
+		});
+
+		expect(verified.facts["task.goal"]).toMatchObject({
+			value: "Summarize a repository",
+			version: 2,
+			status: "verified",
+			sourceType: "human_confirmation",
+			sourceRef: "confirmation-1",
+			recordedBy: "user-1",
+			recordedAt: "2026-09-01T00:00:00.000Z",
+		});
+		expect(engine.readFactCommand(scope, "verify-goal")).toMatchObject({
+			key: "task.goal",
+			version: 2,
+			status: "verified",
+		});
+		expect(engine.resolveFact({
+			...command("verify-goal", candidate.aggregateVersion),
+			factKey: "task.goal",
+			decision: "verified",
+			sourceRef: "confirmation-1",
+		}).aggregateVersion).toBe(verified.aggregateVersion);
+		expect(() => engine.recordFactVersion({
+			...command("forge-verified", verified.aggregateVersion),
+			factKey: "task.deadline",
+			factVersion: 1,
+			value: "tomorrow",
+			status: "verified",
+			sourceType: "user_input",
+			sourceRef: "message-2",
+		})).toThrowError(expect.objectContaining({
+			code: "illegal_transition",
+		}) as Partial<EnterpriseKernelError>);
+	});
+
+	it("invalidates a fresh Artifact when a new field Fact enters its Run", () => {
+		const { engine } = harness();
+		const waiting = prepareProposal(engine);
+		const stale = engine.recordFactVersion({
+			...command("record-new-deadline", waiting.aggregateVersion),
+			factKey: "task.deadline",
+			factVersion: 1,
+			value: "2026-09-10",
+			status: "unverified",
+			sourceType: "user_input",
+			sourceRef: "message-deadline",
+		});
+
+		expect(stale.stageStatus).toBe("revision_required");
+		expect(stale.currentProposal?.freshness).toBe("stale");
+		expect(stale.approval?.status).toBe("superseded");
+	});
+
 	it("restarts the stage and creates Proposal v2 from the latest Fact lineage", () => {
 		const { engine } = harness();
 		const waiting = prepareProposal(engine);

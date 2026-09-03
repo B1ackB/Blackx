@@ -55,6 +55,46 @@ function decision(payload: unknown): "approved" | "rejected" {
 	return payload.decision;
 }
 
+function factValue(payload: unknown): string | number | boolean {
+	if (!isRecord(payload)) {
+		throw new ProposalWorkspaceValidationError("Request payload must be an object");
+	}
+	const value = payload.value;
+	if (
+		(typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") ||
+		(typeof value === "number" && !Number.isFinite(value)) ||
+		(typeof value === "string" && (!value.trim() || value.length > 4_096))
+	) {
+		throw new ProposalWorkspaceValidationError("value is invalid");
+	}
+	return typeof value === "string" ? value.trim() : value;
+}
+
+function factUnit(payload: unknown): string | undefined {
+	if (!isRecord(payload) || payload.unit === undefined || payload.unit === "") return undefined;
+	if (typeof payload.unit !== "string" || payload.unit.length > 32 || /[\r\n\u0000]/.test(payload.unit)) {
+		throw new ProposalWorkspaceValidationError("unit is invalid");
+	}
+	return payload.unit;
+}
+
+function factDecision(payload: unknown): "verified" | "rejected" {
+	if (!isRecord(payload) || (payload.decision !== "verified" && payload.decision !== "rejected")) {
+		throw new ProposalWorkspaceValidationError("Fact decision is invalid");
+	}
+	return payload.decision;
+}
+
+function sameFact(
+	left: { key: string; value: string | number | boolean; unit?: string; status: string },
+	right: { key: string; value: string | number | boolean; unit?: string; status: string },
+): boolean {
+	return left.key === right.key &&
+		Object.is(left.value, right.value) &&
+		left.unit === right.unit &&
+		left.status === right.status;
+}
+
 function runId(scope: Omit<AggregateScope, "runId">, conversationId: string): string {
 	const digest = createHash("sha256")
 		.update(`${scope.tenantId}\u0000${scope.workspaceId}\u0000${conversationId}`)
@@ -220,6 +260,95 @@ export class ProposalWorkspaceApiController {
 				this.outbox.dispatchOne();
 			}
 			return { status: 202, body: { proposal: this.view(this.engine.load(scope)) } };
+		});
+	}
+
+	recordFact(
+		context: ConversationApiContext,
+		conversationId: unknown,
+		payload: unknown,
+	): ConversationApiResponse {
+		return this.respond(() => {
+			const id = requestId(payload);
+			if (!isRecord(payload)) {
+				throw new ProposalWorkspaceValidationError("Request payload must be an object");
+			}
+			const factKey = requiredId(payload.key, "factKey", 64);
+			const value = factValue(payload);
+			const unit = factUnit(payload);
+			const { scope, conversation } = this.target(context, conversationId);
+			const actorId = requiredId(context.actorId, "actorId");
+			const state = this.engine.load(scope);
+			if (state.aggregateVersion === 0) {
+				throw new EnterpriseKernelError("illegal_transition", "Proposal Run does not exist");
+			}
+			const commandId = `${id}:fact`;
+			const recorded = this.engine.readFactCommand(scope, commandId);
+			const candidate = { key: factKey, value, unit, status: "unverified" };
+			if (recorded && !sameFact(recorded, candidate)) {
+				throw new EnterpriseKernelError(
+					"concurrency_conflict",
+					"requestId is already bound to another Fact candidate",
+				);
+			}
+			const next = recorded
+				? state
+				: this.engine.recordFactVersion({
+						...scope,
+						actorId,
+						commandId,
+						correlationId: `${id}:fact-update`,
+						expectedVersion: state.aggregateVersion,
+						factKey,
+						factVersion: (state.factVersions[factKey] ?? 0) + 1,
+						value,
+						unit,
+						status: "unverified",
+						sourceType: "user_input",
+						sourceRef: `conversation:${conversation.conversationId}:fact-form:${id}`,
+					});
+			return { status: 200, body: { proposal: this.view(next) } };
+		});
+	}
+
+	resolveFact(
+		context: ConversationApiContext,
+		conversationId: unknown,
+		factKeyValue: unknown,
+		payload: unknown,
+	): ConversationApiResponse {
+		return this.respond(() => {
+			const id = requestId(payload);
+			const selectedDecision = factDecision(payload);
+			const factKey = requiredId(factKeyValue, "factKey", 64);
+			const { scope, conversation } = this.target(context, conversationId);
+			const actorId = requiredId(context.actorId, "actorId");
+			const state = this.engine.load(scope);
+			const current = state.facts[factKey];
+			if (!current) {
+				throw new EnterpriseKernelError("illegal_transition", "Fact does not exist");
+			}
+			const commandId = `${id}:fact-decision`;
+			const recorded = this.engine.readFactCommand(scope, commandId);
+			if (recorded && (recorded.key !== factKey || recorded.status !== selectedDecision)) {
+				throw new EnterpriseKernelError(
+					"concurrency_conflict",
+					"requestId is already bound to another Fact decision",
+				);
+			}
+			const next = recorded
+				? state
+				: this.engine.resolveFact({
+						...scope,
+						actorId,
+						commandId,
+						correlationId: `${id}:fact-decision`,
+						expectedVersion: state.aggregateVersion,
+						factKey,
+						decision: selectedDecision,
+						sourceRef: `conversation:${conversation.conversationId}:fact-decision:${id}`,
+					});
+			return { status: 200, body: { proposal: this.view(next) } };
 		});
 	}
 

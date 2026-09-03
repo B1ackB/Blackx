@@ -24,6 +24,10 @@ function parseDocument(value: string): QueueDocument {
 				? {
 					...job,
 					redriveCount: "redriveCount" in job ? job.redriveCount : 0,
+					recoveryCount: "recoveryCount" in job ? job.recoveryCount : 0,
+					totalRecoveryDetectionDelayMs: "totalRecoveryDetectionDelayMs" in job
+						? job.totalRecoveryDetectionDelayMs
+						: 0,
 					totalFailureCount: "totalFailureCount" in job
 						? job.totalFailureCount
 						: "failureCount" in job ? job.failureCount : 0,

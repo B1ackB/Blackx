@@ -26,6 +26,8 @@ export interface RuntimeUsage {
 export type RuntimeExecutionEvent =
 	| { type: "session.started"; sessionId: string }
 	| { type: "turn.started" }
+	| { type: "model.started"; iteration: number; attempt: number }
+	| { type: "model.completed"; iteration: number; durationMs: number; usage: RuntimeUsage }
 	| { type: "context.snapshot.saved"; snapshotId: string; iteration: number }
 	| { type: "context.compacted"; removedMessages: number; summaries: number }
 	| { type: "message.completed"; text: string }
@@ -77,6 +79,35 @@ export interface RuntimeTurnResult {
   finalResponse: string;
   events: RuntimeExecutionEvent[];
   usage?: RuntimeUsage;
+}
+
+export interface RuntimeTraceRecord {
+	schemaVersion: "runtime-trace.v1";
+	tenantId: string;
+	workspaceId: string;
+	runId: string;
+	stageId: string;
+	actorId: string;
+	executionId: string;
+	idempotencyKey: string;
+	status: "completed" | "paused" | "failed";
+	startedAt: string;
+	completedAt: string;
+	durationMs: number;
+	sessionId?: string;
+	contextSnapshotId?: string;
+	events: RuntimeExecutionEvent[];
+	usage?: RuntimeUsage;
+	failure?: {
+		code: RuntimeFailureCode;
+		retryable: boolean;
+		message: string;
+	};
+}
+
+export interface RuntimeTraceStore {
+	putTrace(trace: RuntimeTraceRecord): RuntimeTraceRecord;
+	listTraces(scope: { tenantId: string; workspaceId: string; runId: string }): RuntimeTraceRecord[];
 }
 
 export interface RuntimeHealth {

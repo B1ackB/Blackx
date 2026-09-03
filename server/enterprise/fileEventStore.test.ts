@@ -146,15 +146,17 @@ describe("FileEnterpriseEventStore", () => {
 			new FileEnterpriseEventStore(filePath),
 		).load(scope);
 
-		expect(recovered.facts.quantity).toEqual({
+			expect(recovered.facts.quantity).toEqual({
 			key: "quantity",
 			version: 1,
 			value: 10_000,
 			unit: "bags",
 			status: "unverified",
-			sourceType: "user_input",
-			sourceRef: "message-persisted-1",
-		});
+				sourceType: "user_input",
+				sourceRef: "message-persisted-1",
+				recordedAt: expect.any(String),
+				recordedBy: "user-persisted",
+			});
 	});
 
 	it("preserves the tenant and workspace boundary after restart", () => {

@@ -5,6 +5,7 @@ import type {
 	EnterpriseEvent,
 	EnterpriseEventData,
 	EnterpriseEventStore,
+	FactVersionState,
 	FactSourceType,
 	FactStatus,
 	OutboxDraft,
@@ -81,6 +82,12 @@ export interface RecordFactVersionCommand extends CommandEnvelope {
 	sourceRef: string;
 }
 
+export interface ResolveFactCommand extends CommandEnvelope {
+	factKey: string;
+	decision: "verified" | "rejected";
+	sourceRef: string;
+}
+
 function initialState(scope: AggregateScope): ProposalRunState {
 	return {
 		tenantId: scope.tenantId,
@@ -112,7 +119,7 @@ function reduceEvent(
 			return next;
 		case "stage.started":
 			if (state.stageStatus !== "pending") illegal("Proposal stage is not pending");
-			return { ...next, status: "running", stageStatus: "running" };
+			return { ...next, status: "running", stageStatus: "running", lastJobId: undefined };
 		case "stage.execution_requested":
 			if (state.stageStatus !== "running" && !(
 				state.stageStatus === "waiting_approval" && state.approval?.status === "approved"
@@ -133,6 +140,8 @@ function reduceEvent(
 						status: data.status,
 						sourceType: data.sourceType,
 						sourceRef: data.sourceRef,
+						recordedAt: event.occurredAt,
+						recordedBy: event.actorId,
 					},
 				},
 				factVersions: {
@@ -274,7 +283,7 @@ function reduceEvent(
 			) {
 				illegal("Proposal stage is not restartable from its current state");
 			}
-			return { ...next, status: "running", stageStatus: "running" };
+			return { ...next, status: "running", stageStatus: "running", lastJobId: undefined };
 		case "stage.completed":
 			if (
 				state.stageStatus !== "waiting_approval" ||
@@ -436,7 +445,6 @@ export class ProposalRunEngine {
 		const usedVersion = current?.inputFactVersions[command.factKey];
 		const invalidates =
 			current?.freshness === "fresh" &&
-			usedVersion !== undefined &&
 			usedVersion !== command.factVersion;
 		const events: EnterpriseEventData[] = [{
 			type: "fact.version_recorded",
@@ -466,11 +474,55 @@ export class ProposalRunEngine {
 			events.push({ type: "stage.revision_required", stage: "proposal" });
 		}
 		return this.execute(command, events, (latest) => {
+			if (
+				latest.stageStatus === "evaluating" ||
+				latest.stageStatus === "running" && latest.lastJobId
+			) {
+				throw new EnterpriseKernelError(
+					"concurrency_conflict",
+					"Facts cannot change while the Proposal Worker is executing",
+				);
+			}
+			this.assertFactAuthority(command);
 			const recorded = latest.factVersions[command.factKey];
 			if (recorded !== undefined && command.factVersion <= recorded) {
 				illegal("Fact versions must increase monotonically");
 			}
 		});
+	}
+
+	resolveFact(command: ResolveFactCommand): ProposalRunState {
+		if (this.readFactCommand(command, command.commandId)) return this.load(command);
+		const current = this.load(command).facts[command.factKey];
+		if (!current) illegal("Fact does not exist");
+		if (current.status !== "suggested" && current.status !== "unverified") {
+			illegal("Only suggested or unverified Facts can be resolved");
+		}
+		return this.recordFactVersion({
+			...command,
+			factVersion: current.version + 1,
+			value: current.value,
+			unit: current.unit,
+			status: command.decision,
+			sourceType: "human_confirmation",
+		});
+	}
+
+	readFactCommand(scope: AggregateScope, commandId: string): FactVersionState | undefined {
+		const event = this.store.readCommand(scope, commandId)
+			.find((candidate) => candidate.data.type === "fact.version_recorded");
+		if (!event || event.data.type !== "fact.version_recorded") return undefined;
+		return {
+			key: event.data.factKey,
+			version: event.data.factVersion,
+			value: event.data.value,
+			unit: event.data.unit,
+			status: event.data.status,
+			sourceType: event.data.sourceType,
+			sourceRef: event.data.sourceRef,
+			recordedAt: event.occurredAt,
+			recordedBy: event.actorId,
+		};
 	}
 
 	restartProposal(command: CommandEnvelope): ProposalRunState {
@@ -576,6 +628,26 @@ export class ProposalRunEngine {
 			if (inputFactVersions[factKey] !== factVersion) {
 				illegal("Proposal Artifact does not consume the latest recorded Fact versions");
 			}
+		}
+	}
+
+	private assertFactAuthority(command: RecordFactVersionCommand): void {
+		if (
+			command.status === "verified" &&
+			command.sourceType !== "enterprise_source" &&
+			command.sourceType !== "human_confirmation"
+		) {
+			illegal("Verified Facts require an enterprise source or human confirmation");
+		}
+		if (command.status === "rejected" && command.sourceType !== "human_confirmation") {
+			illegal("Rejected Facts require human confirmation");
+		}
+		if (
+			command.sourceType === "human_confirmation" &&
+			command.status !== "verified" &&
+			command.status !== "rejected"
+		) {
+			illegal("Human confirmation must verify or reject a Fact");
 		}
 	}
 

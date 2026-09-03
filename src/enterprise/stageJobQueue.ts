@@ -25,6 +25,8 @@ export interface StageJob extends AggregateScope {
 	sliceCount: number;
 	failureCount: number;
 	totalFailureCount: number;
+	recoveryCount: number;
+	totalRecoveryDetectionDelayMs: number;
 	maxFailures: number;
 	maxSlices: number;
 	availableAt: string;
@@ -42,6 +44,12 @@ export interface StageJob extends AggregateScope {
 		reason: string;
 		at: string;
 	};
+	lastRecovery?: {
+		previousLeaseOwner: string;
+		expiredAt: string;
+		recoveredAt: string;
+		detectionDelayMs: number;
+	};
 }
 
 export interface StageJobQueueMetrics {
@@ -57,6 +65,8 @@ export interface StageJobQueueMetrics {
 	slices: number;
 	failures: number;
 	redrives: number;
+	recoveries: number;
+	recoveryDetectionDelayMs: number;
 	oldestQueuedAgeMs: number;
 }
 
@@ -145,6 +155,15 @@ function validFailure(value: unknown): value is StageJobFailure {
 		validDate(failure.at);
 }
 
+function validRecovery(value: unknown): value is NonNullable<StageJob["lastRecovery"]> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const recovery = value as Partial<NonNullable<StageJob["lastRecovery"]>>;
+	return validId(recovery.previousLeaseOwner) &&
+		validDate(recovery.expiredAt) &&
+		validDate(recovery.recoveredAt) &&
+		Number.isInteger(recovery.detectionDelayMs) && Number(recovery.detectionDelayMs) >= 0;
+}
+
 function validJson(value: unknown, seen = new Set<object>()): boolean {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
 	if (typeof value === "number") return Number.isFinite(value);
@@ -191,6 +210,8 @@ export function isStageJob(value: unknown): value is StageJob {
 		Number.isInteger(job.sliceCount) && Number(job.sliceCount) >= 0 &&
 		Number.isInteger(job.failureCount) && Number(job.failureCount) >= 0 &&
 		Number.isInteger(job.totalFailureCount) && Number(job.totalFailureCount) >= 0 &&
+		Number.isInteger(job.recoveryCount) && Number(job.recoveryCount) >= 0 &&
+		Number.isInteger(job.totalRecoveryDetectionDelayMs) && Number(job.totalRecoveryDetectionDelayMs) >= 0 &&
 		Number.isInteger(job.maxFailures) && Number(job.maxFailures) > 0 &&
 		Number.isInteger(job.maxSlices) && Number(job.maxSlices) > 0 &&
 		validDate(job.availableAt) && validDate(job.createdAt) && validDate(job.updatedAt) &&
@@ -199,6 +220,7 @@ export function isStageJob(value: unknown): value is StageJob {
 		(job.payload === undefined || validPayload(job.payload)) &&
 		Number.isInteger(job.redriveCount) && Number(job.redriveCount) >= 0 &&
 		(job.lastFailure === undefined || validFailure(job.lastFailure)) &&
+		(job.lastRecovery === undefined || validRecovery(job.lastRecovery)) &&
 		(job.lastRedrive === undefined || Boolean(job.lastRedrive) &&
 			validId(job.lastRedrive.actorId) &&
 			typeof job.lastRedrive.reason === "string" && job.lastRedrive.reason.length > 0 &&
@@ -295,6 +317,8 @@ export class DurableStageJobQueue implements StageJobQueue {
 				sliceCount: 0,
 				failureCount: 0,
 				totalFailureCount: 0,
+				recoveryCount: 0,
+				totalRecoveryDetectionDelayMs: 0,
 				maxFailures: input.maxFailures ?? 5,
 				maxSlices: input.maxSlices ?? 32,
 				redriveCount: 0,
@@ -517,6 +541,11 @@ export class DurableStageJobQueue implements StageJobQueue {
 			slices: jobs.reduce((sum, job) => sum + job.sliceCount, 0),
 			failures: jobs.reduce((sum, job) => sum + job.totalFailureCount, 0),
 			redrives: jobs.reduce((sum, job) => sum + job.redriveCount, 0),
+			recoveries: jobs.reduce((sum, job) => sum + job.recoveryCount, 0),
+			recoveryDetectionDelayMs: jobs.reduce(
+				(sum, job) => sum + job.totalRecoveryDetectionDelayMs,
+				0,
+			),
 			oldestQueuedAgeMs: queued.length === 0
 				? 0
 				: Math.max(0, now - Math.min(...queued.map((job) => Date.parse(job.createdAt)))),
@@ -546,12 +575,19 @@ export class DurableStageJobQueue implements StageJobQueue {
 	private recoverExpiredLeases(jobs: StageJob[], now: Date): void {
 		for (const job of jobs) {
 			if (job.status !== "leased" || Date.parse(job.leaseExpiresAt ?? "") > now.getTime()) continue;
+			if (!job.leaseOwner || !job.leaseExpiresAt) {
+				throw new StageJobQueueError("queue_corrupt", "Leased Stage Job is missing lease identity");
+			}
 			const failureCount = job.failureCount + 1;
+			const expiredAt = job.leaseExpiresAt;
+			const detectionDelayMs = Math.max(0, now.getTime() - Date.parse(expiredAt));
 			const recovered: StageJob = {
 				...withoutLease(job),
 				status: failureCount < job.maxFailures ? "queued" : "dead_letter",
 				failureCount,
 				totalFailureCount: job.totalFailureCount + 1,
+				recoveryCount: job.recoveryCount + 1,
+				totalRecoveryDetectionDelayMs: job.totalRecoveryDetectionDelayMs + detectionDelayMs,
 				availableAt: now.toISOString(),
 				updatedAt: now.toISOString(),
 				lastFailure: {
@@ -559,6 +595,12 @@ export class DurableStageJobQueue implements StageJobQueue {
 					message: "Worker lease expired before acknowledgement",
 					retryable: true,
 					at: now.toISOString(),
+				},
+				lastRecovery: {
+					previousLeaseOwner: job.leaseOwner,
+					expiredAt,
+					recoveredAt: now.toISOString(),
+					detectionDelayMs,
 				},
 			};
 			jobs[jobs.indexOf(job)] = recovered;

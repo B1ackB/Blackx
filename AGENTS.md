@@ -6,7 +6,7 @@ Blackx 的产品目标是以自研 Agent Core 构建面向企业的多模态长�
 
 - `Blackx Agent Core` 提供 Agent Loop、Model Provider、Hook、Tool、Session、Context、Skill 与 Compact 等行业无关能力。
 - `Blackx Enterprise Layer` 提供 Durable Workflow、Artifact、Approval、Evaluation、Policy、Event Store、Tenant 与 Audit 等企业能力。
-- `Blackx Print` 是第一个印刷行业 Domain Pack，负责印刷方案、包装视觉、印前文件和质量检查。
+- `Blackx Print` 是已存在的印刷行业 Domain Pack 和回归资产，负责印刷方案、包装视觉、印前文件和质量检查，但不定义通用 M1/M2 的完成条件。
 
 Blackx 自研最小 Agent Core，但不重复实现模型 Provider、存储和平台已经可靠提供的通用能力。Core 保持行业无关，印刷规则只能通过 Enterprise Layer 与 Domain Pack 接入。
 
@@ -220,20 +220,19 @@ Agent Core 能力扩展必须按以下顺序评估：
 - Harness 对比必须尽量保持同模型、同任务和同预算。
 - LLM Judge 不得作为印刷生产正确性的唯一证据。
 
-### P3.4 首个闭环优先
+### P3.4 首个真实产品闭环优先
 
-在第一个包装印刷闭环稳定前，不优先扩展视频、插件市场、复杂 JDF、多行业、自动生产和通用 Agent 平台。
+在第一个真实用户闭环稳定前，不优先扩展插件市场、多 Agent、复杂并行、自我修改或通用 Agent 平台。Print Domain Pack 可继续维护回归资产，但不再阻塞行业无关 Runtime 和新产品闭环。
 
 首个闭环目标：
 
 ```text
-一个包装品类
-→ 一套结构化印刷方案
-→ 一组包装视觉与 Mockup
-→ 一个基于权威刀模的印刷 PDF
-→ 一份 Preflight 报告
-→ 一个客户提案网页
-→ 两个明确审批点
+一个明确用户与高频任务
+→ 一组有来源、状态和版本的 Fact
+→ 一组受权限和预算控制的 Tool
+→ 一个结构化、版本化 Artifact
+→ 一个可重复 Evaluator
+→ 一个必要的确认或 Approval Gate
 → 一次可验证的中断恢复
 ```
 

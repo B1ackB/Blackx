@@ -46,6 +46,8 @@ describe("Blackx Agent Runtime contract", () => {
 			"session.started",
 			"turn.started",
 			"context.snapshot.saved",
+			"model.started",
+			"model.completed",
 			"message.completed",
 			"turn.completed",
 		]);
@@ -142,6 +144,7 @@ describe("Blackx Agent Runtime contract", () => {
 			skills: new SkillRegistry(),
 			sessions: state,
 			snapshots: state,
+			traces: state,
 			now: () => "2026-09-02T00:00:00.000Z",
 		});
 		await expect(runtime.executeTurn({
@@ -159,6 +162,17 @@ describe("Blackx Agent Runtime contract", () => {
 			iteration: 1,
 			createdAt: "2026-09-02T00:00:00.000Z",
 		});
+		expect(state.listTraces(request)).toMatchObject([{
+			status: "failed",
+			failure: { code: "model_failure", retryable: true },
+			events: [
+				{ type: "session.started" },
+				{ type: "turn.started" },
+				{ type: "context.snapshot.saved", snapshotId: "snapshot-failed-i1" },
+				{ type: "model.started", iteration: 1 },
+				{ type: "turn.failed" },
+			],
+		}]);
 	});
 
 	it("preserves provider authentication classification through token counting", async () => {
