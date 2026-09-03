@@ -30,6 +30,7 @@ export type FactStatus = "suggested" | "unverified" | "verified" | "rejected";
 
 export type FactSourceType =
 	| "user_input"
+	| "model_output"
 	| "enterprise_source"
 	| "human_confirmation";
 
@@ -41,6 +42,8 @@ export interface FactVersionState {
 	status: FactStatus;
 	sourceType: FactSourceType;
 	sourceRef: string;
+	recordedAt?: string;
+	recordedBy?: string;
 }
 
 export interface ArtifactVersionState {

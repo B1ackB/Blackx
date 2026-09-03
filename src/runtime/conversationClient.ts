@@ -1,4 +1,5 @@
 import type { RuntimeHealth } from "./contracts";
+import type { RuntimeTraceRecord } from "./contracts";
 import type {
 	BackgroundTaskView,
 	ConversationSummary,
@@ -70,6 +71,12 @@ export class ConversationClient {
 		)).conversation;
 	}
 
+	async listTraces(conversationId: string): Promise<RuntimeTraceRecord[]> {
+		return (await request<{ traces: RuntimeTraceRecord[] }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/traces`,
+		)).traces;
+	}
+
 	async send(
 		conversationId: string,
 		message: { messageId: string; content: string },
@@ -118,6 +125,29 @@ export class ConversationClient {
 		return (await request<{ proposal: ProposalWorkspaceView }>(
 			`/api/conversations/${encodeURIComponent(conversationId)}/proposal`,
 			{ method: "POST", body: JSON.stringify({ requestId }) },
+		)).proposal;
+	}
+
+	async recordProposalFact(
+		conversationId: string,
+		requestId: string,
+		fact: { key: string; value: string | number | boolean; unit?: string },
+	): Promise<ProposalWorkspaceView> {
+		return (await request<{ proposal: ProposalWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/proposal/facts`,
+			{ method: "POST", body: JSON.stringify({ requestId, ...fact }) },
+		)).proposal;
+	}
+
+	async resolveProposalFact(
+		conversationId: string,
+		factKey: string,
+		requestId: string,
+		decision: "verified" | "rejected",
+	): Promise<ProposalWorkspaceView> {
+		return (await request<{ proposal: ProposalWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/proposal/facts/${encodeURIComponent(factKey)}/decision`,
+			{ method: "POST", body: JSON.stringify({ requestId, decision }) },
 		)).proposal;
 	}
 

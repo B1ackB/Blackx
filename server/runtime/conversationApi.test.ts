@@ -133,6 +133,7 @@ describe("ConversationApiController", () => {
 			skills: new SkillRegistry(printSkills),
 			sessions,
 			snapshots: sessions,
+			traces: sessions,
 		});
 		const controller = new ConversationApiController(
 			runtime,
@@ -161,6 +162,19 @@ describe("ConversationApiController", () => {
 		]);
 		expect(controller.list(context)).toMatchObject({
 			body: { conversations: [{ title: "第一轮问题", messageCount: 2 }] },
+		});
+		expect(controller.traces(context, conversationId)).toMatchObject({
+			status: 200,
+			body: {
+				traces: [{
+					status: "completed",
+					usage: { inputTokens: 2, outputTokens: 2 },
+					events: expect.arrayContaining([
+						expect.objectContaining({ type: "model.completed" }),
+						expect.objectContaining({ type: "message.completed", text: "[stored in session]" }),
+					]),
+				}],
+			},
 		});
 
 		const duplicate = await controller.send(context, conversationId, {

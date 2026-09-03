@@ -27,6 +27,7 @@ import {
 	type ContextSnapshotRecord,
 	type ContextSnapshotStore,
 } from "../../src/agent/state";
+import type { RuntimeTraceRecord, RuntimeTraceStore } from "../../src/runtime/contracts";
 
 interface SessionFile extends AgentSessionScope {
 	schemaVersion: "agent-session.v1";
@@ -87,6 +88,27 @@ function toolExecutionRecord(value: unknown): value is AgentToolExecutionRecord 
 	);
 }
 
+function runtimeTrace(value: unknown): value is RuntimeTraceRecord {
+	if (!record(value) || value.schemaVersion !== "runtime-trace.v1") return false;
+	const usage = value.usage;
+	return ["tenantId", "workspaceId", "runId", "stageId", "actorId", "executionId", "idempotencyKey"]
+		.every((key) => typeof value[key] === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(value[key]))) &&
+		["completed", "paused", "failed"].includes(String(value.status)) &&
+		typeof value.startedAt === "string" && Number.isFinite(Date.parse(value.startedAt)) &&
+		typeof value.completedAt === "string" && Number.isFinite(Date.parse(value.completedAt)) &&
+		Number.isInteger(value.durationMs) && Number(value.durationMs) >= 0 &&
+		(value.sessionId === undefined || typeof value.sessionId === "string") &&
+		(value.contextSnapshotId === undefined || typeof value.contextSnapshotId === "string") &&
+		Array.isArray(value.events) && value.events.every((event) => record(event) && typeof event.type === "string") &&
+		(usage === undefined || record(usage) &&
+			["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"].every(
+				(key) => Number.isInteger(usage[key]) && Number(usage[key]) >= 0,
+			)) &&
+		(value.failure === undefined || record(value.failure) &&
+			typeof value.failure.code === "string" && typeof value.failure.retryable === "boolean" &&
+			typeof value.failure.message === "string");
+}
+
 function sameScope(value: {
 	tenantId?: unknown;
 	workspaceId?: unknown;
@@ -118,7 +140,7 @@ function equivalentSnapshot(left: ContextSnapshotRecord, right: ContextSnapshotR
 	return canonical(leftComparable) === canonical(rightComparable);
 }
 
-export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotStore, AgentToolExecutionStore, AgentToolAuditPort {
+export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotStore, AgentToolExecutionStore, AgentToolAuditPort, RuntimeTraceStore {
 	constructor(private readonly rootDirectory: string) {}
 
 	load(scope: AgentSessionScope): AgentSessionState {
@@ -259,6 +281,36 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 		});
 	}
 
+	putTrace(trace: RuntimeTraceRecord): RuntimeTraceRecord {
+		const persisted = JSON.parse(JSON.stringify(trace)) as RuntimeTraceRecord;
+		if (!runtimeTrace(persisted)) throw new AgentStateStoreError("unavailable", "Runtime Trace is invalid");
+		const path = this.tracePath(persisted, persisted.executionId);
+		return this.locked(path, () => {
+			if (existsSync(path)) {
+				const existing = this.parseTrace(this.readFile(path), persisted, persisted.executionId);
+				if (canonical(existing) !== canonical(persisted)) {
+					throw new AgentStateStoreError("conflict", "Runtime Trace identity conflict");
+				}
+				return existing;
+			}
+			this.write(path, persisted);
+			return structuredClone(persisted);
+		});
+	}
+
+	listTraces(scope: { tenantId: string; workspaceId: string; runId: string }): RuntimeTraceRecord[] {
+		const directory = join(this.scopeDirectory({ ...scope, sessionId: "trace-list" }), "traces");
+		if (!existsSync(directory)) return [];
+		return readdirSync(directory, { withFileTypes: true })
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+			.map((entry) => this.parseTrace(
+				this.readFile(join(directory, entry.name)),
+				scope,
+				entry.name.slice(0, -5),
+			))
+			.sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
+	}
+
 	private parseSnapshot(
 		value: unknown,
 		scope: AgentSessionScope,
@@ -329,6 +381,32 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 
 	private snapshotPath(scope: AgentSessionScope, snapshotId: string): string {
 		return join(this.scopeDirectory(scope), "contexts", `${segment(snapshotId, "snapshotId")}.json`);
+	}
+
+	private tracePath(
+		scope: { tenantId: string; workspaceId: string; runId: string },
+		executionId: string,
+	): string {
+		return join(
+			this.rootDirectory,
+			segment(scope.tenantId, "tenantId"),
+			segment(scope.workspaceId, "workspaceId"),
+			segment(scope.runId, "runId"),
+			"traces",
+			`${segment(executionId, "executionId")}.json`,
+		);
+	}
+
+	private parseTrace(
+		value: unknown,
+		scope: { tenantId: string; workspaceId: string; runId: string },
+		executionId: string,
+	): RuntimeTraceRecord {
+		if (!runtimeTrace(value) || value.tenantId !== scope.tenantId || value.workspaceId !== scope.workspaceId ||
+			value.runId !== scope.runId || value.executionId !== executionId) {
+			throw new AgentStateStoreError("corrupt", "Runtime Trace file is invalid");
+		}
+		return structuredClone(value);
 	}
 
 	private toolExecutionPath(key: AgentToolExecutionKey): string {

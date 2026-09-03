@@ -1,8 +1,8 @@
 # Blackx
 
-Blackx 是一个拥有自研 Agent Core、面向企业交付物的多模态长任务 Agent 产品。首个 Domain Pack 聚焦包装印刷售前方案、包装视觉、印前文件与质量检查。
+Blackx 是一个拥有自研 Agent Core、面向可验证交付物的长任务 Agent 产品。Agent Core 与当前 M1 保持行业无关；Print 作为已存在的 Domain Pack 和纵向回归资产保留。
 
-当前阶段：M0 Agent Core Scope 已冻结并通过 DeepSeek Anthropic-compatible Online Contract；DeepSeek 是当前唯一 Online Provider Gate，官方 Anthropic 端点验证不在当前范围；M1 Proposal Enterprise Kernel 开发中。自研 Core 已覆盖顺序 Agent Loop、通用观察型 Hook、Context、Skill、Token Count、摘要 Compact、受审批和审计控制的写入 Tool、可持久恢复的 Session、ContextSnapshot 和 Fake/Anthropic Model Provider。Enterprise Kernel 已覆盖显式状态、事件重放、幂等命令、乐观并发、租户边界、Artifact Version 与审批绑定。生产数据库和行业数据 Adapter 尚未完成。
+当前阶段：M0 Agent Core 与 M1 Durable Single-Agent Runtime 已冻结，并分别通过 DeepSeek Anthropic-compatible Online Gate。自研 Core 已覆盖 Loop、Hook、Context、Skill、Compact、强类型 Tool、持久 Session/ContextSnapshot；Durable Runtime 已覆盖状态机、事件重放、幂等命令、Artifact/Fact Version、Worker slice、Transactional Outbox、单主机 SQLite Queue、Background/Cron、Crash Recovery、持久 Trace 和审批绑定。当前进入 M2 Scope Gate；多主机生产存储和受控 RSI 不在当前实现范围。
 
 ## 本地演示
 
@@ -21,7 +21,10 @@ Provider 只运行在 Node.js 服务端；浏览器不会读取 API Key。模型
 
 ```bash
 npm run eval:offline
+npm run eval:m1
 ```
+
+M1 真实 DeepSeek Gate 使用 `npm run eval:m1-online`。它要求模型先调用固定只读 Source Tool，再生成经过确定性 Schema、Citation 和 Fact Lineage 检查的 Evidence Report。
 
 Anthropic Messages Provider Adapter 已具备离线 Contract Test 和明确的能力矩阵；DeepSeek `deepseek-v4-flash` 已通过带 thinking 回传的真实 Tool Loop Contract。官方 Anthropic 端点仍被账户状态阻塞，且兼容 Contract 通过不等于生产完成能力。
 
@@ -42,4 +45,6 @@ Web UI 已移除 `LocalEventStore`、客户端事实投影和本地恢复模拟�
 - [封口袋标准权威与派生规则](docs/sealing-bag-standards.md)
 - [产品路线图](docs/roadmap.md)
 - [M0：Blackx Agent Core](docs/milestone-0-agent-core.md)
-- [M1：可恢复 Proposal 纵向切片](docs/milestone-1-proposal-slice.md)
+- [M1：Durable Single-Agent Runtime](docs/milestone-1-durable-runtime.md)
+- [M2：首个真实产品纵向闭环](docs/milestone-2-product-slice.md)
+- [历史 Print Proposal 纵向切片](docs/milestone-1-proposal-slice.md)

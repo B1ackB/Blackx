@@ -65,7 +65,12 @@ for (const adapter of ["memory", "sqlite"] as const) {
 
 				current = new Date("2026-09-03T00:00:00.181Z");
 				const reassigned = queue.claim("worker-b", 100)!;
-				expect(reassigned).toMatchObject({ leaseOwner: "worker-b", failureCount: 1 });
+				expect(reassigned).toMatchObject({
+					leaseOwner: "worker-b",
+					failureCount: 1,
+					recoveryCount: 1,
+					totalRecoveryDetectionDelayMs: 1,
+				});
 				expect(() => queue.ack(renewed)).toThrowError(
 					expect.objectContaining<Partial<StageJobQueueError>>({ code: "lease_lost" }),
 				);

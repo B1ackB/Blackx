@@ -29,7 +29,7 @@ Blackx Agent Core
 └── Skill / Configuration
 ```
 
-第一阶段产品闭环面向包装印刷的售前方案和印前交付，不直接控制印刷设备。
+第一阶段产品闭环面向一个待 M2 Scope Gate 确认的真实长任务；当前采用 `Research Task → Evidence-backed Report Artifact` 作为参考 Fixture。Blackx Print 保留为 Domain Pack 和回归资产，不再定义通用 M1/M2。
 
 Agent Core 保持行业无关：它只执行一次受限 Agent Turn，不拥有企业 Workflow，也不包含印刷业务条件分支。
 
@@ -42,7 +42,7 @@ Agent Core 保持行业无关：它只执行一次受限 Agent Turn，不拥有�
 
 ### 2.1 Artifact-first
 
-企业购买的是结果和流程可信度，而不是聊天轮数。所有重要输出都必须形成 Artifact：
+用户购买的是结果和流程可信度，而不是聊天轮数。所有重要输出都必须形成 Artifact。以下是已有 Print Domain Pack 的示例，不限制其他产品 Artifact：
 
 ```text
 CustomerBrief
@@ -172,7 +172,15 @@ Agent Session ID 只是 Runtime Resume Handle。Run、Stage、Approval、Artifac
 
 ContextEngine 构建 Blackx 的权威业务上下文，再通过 AgentRuntimePort 注入 Runtime。Compact 只能优化模型上下文，不能成为 Fact、Artifact、Approval 或 Workflow 状态的唯一存储。
 
-### 3.4 ToolRunner
+### 3.4 Fact lifecycle
+
+Enterprise Layer 将 Fact 保存为字段级、版本化状态：每个 Fact 必须具有稳定 Key、标量 Value、可选 Unit、`suggested | unverified | verified | rejected` 状态、来源引用、记录 Actor 与时间。模型输出和普通用户输入只能形成候选；只有企业权威来源或显式人工确认可以产生 `verified`，拒绝也必须形成新的 Fact Version，而不是覆盖旧值。
+
+Artifact 精确记录所消费的 Fact Version。Fact 新增、改值或确认状态变化后，只使依赖旧输入的 Artifact 变为 `stale`，并使绑定该 Artifact Version 的 Approval 失效。Fact 写入与 Worker 执行互斥，避免模型在不一致输入上提交 Artifact。
+
+具体产品负责定义允许的 Fact Key、类型、必填规则和自动抽取 Schema；在产品 Schema 确定前，Enterprise Layer 不允许模型自由创造 `verified` 字段。
+
+### 3.5 ToolRunner
 
 负责：
 
@@ -186,7 +194,7 @@ ContextEngine 构建 Blackx 的权威业务上下文，再通过 AgentRuntimePor
 
 这里的 ToolRunner 是 Blackx 的企业 Tool Gateway。Agent Core 产生 Tool Call，Gateway 再执行 Domain Tool、企业权限、审批、幂等和审计；不得让通用 Shell Tool 绕过 Gateway 完成主要业务副作用。
 
-### 3.5 ArtifactService
+### 3.6 ArtifactService
 
 负责：
 
@@ -372,11 +380,11 @@ Harness 改动采用固定任务、固定模型和固定预算进行对照。至
 3. 打通 Session 启动、继续、恢复、Tool 和事件映射。
 4. 实现 Event Store、状态机和可恢复 RunEngine。
 5. 实现 ContextEngine、Fact、Artifact、Version 和 Approval。
-6. 打通第一个 Print Proposal Workflow。
-7. 加入包装视觉、确定性 Layout、Preflight、Evaluation 和 Repair Loop。
-8. 完成 Tenant、RBAC、Audit 与企业集成。
-9. 根据 Eval 识别 Core/Adapter 无法解决的通用缺口。
-10. 仅对通过 ADR 准入的缺口扩展 Agent Core。
+6. 用行业无关 Fixture 完成 Durable Single-Agent Runtime Gate。
+7. 冻结首个真实用户任务、最小 Tool、Fact、Artifact 和 Evaluator。
+8. 打通 M2 的 UI → Runtime → Tool → Artifact → Evaluation → Approval/Delivery。
+9. 完成 Tenant、RBAC、Audit、生产存储与部署能力。
+10. 仅在稳定 Baseline 上以隔离 Eval、审批和回滚方式实验 RSI。
 
 每个阶段都应产生一个可运行、可测试、可观察的端到端切片。
 

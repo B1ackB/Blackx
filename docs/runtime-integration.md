@@ -1,6 +1,6 @@
 # Blackx Agent Runtime 集成边界
 
-状态：Self-owned Offline Baseline Implemented
+状态：M1 Durable Runtime Frozen
 更新日期：2026-09-03
 
 ## 当前链路
@@ -16,6 +16,7 @@ React UI → Conversation API / Background Task API / Proposal Worker
 	   └─ validated Tool → Approval Port → Audit Port → Tool Execution Store
 → ContextSnapshotStore（每次 Model 调用前）
 → AgentSessionStore（Turn 成功后）
+→ RuntimeTraceStore（成功、暂停或失败后）
 ```
 
 Web Conversation API 在模型调用前先把当前用户消息以 `pinned` 状态写入 Session，再以 `resume: true` 执行本轮；这样当前输入在 Compact 中不可丢失。Turn 成功后 Runtime 保存 Assistant 消息并解除临时 pin。UI 会话列表和历史只读取服务端 Session，不读取旧 `localStorage`。
@@ -37,6 +38,7 @@ Agent 现在也可在普通 Loop 内自主调用 `background_task_*` 和 `cron_*
 - Identity：`actorId` 标识用户、Worker 或 Service Actor，并贯穿 Approval、Tool Context、Audit 与 Execution Record；`toolCallId` 一对一配对 Tool Call/Result，`idempotencyKey` 一对多关联重试 attempt，但最多产生一次成功副作用。
 - Session：按 `tenantId/workspaceId/runId/sessionId` 隔离，成功 Turn 使用 revision compare-and-swap 保存；冲突显式返回 `session_conflict`。
 - ContextSnapshot：在每次 Model 调用前不可变保存最终消息、Skill 版本、字符估算和累计 Compact 删除量；即使 Provider 调用失败也保留该次模型输入证据。
+- RuntimeTrace：持久记录 `model.started/completed`、Tool、Compact、Usage、总耗时和结构化 Failure。Trace 不复制模型正文，`message.completed` 只保存 `[stored in session]`；正文仍由 Tenant/Workspace 隔离的 Session 管理。
 
 ## Enterprise 边界
 
@@ -54,10 +56,10 @@ RunEngine 在同一次 Event Store append 中写入 `stage.execution_requested` 
 - 默认 Fake 不读取 Secret。
 - Online 模式缺少 Base URL、Model 或 Key 时启动失败。
 
-## 尚未完成
+## M1 之后
 
 - 流式 Token、并行 Tool、跨主机生产 Queue/Schedule Adapter、任意脚本任务、Sub-agent 与 Agent Teams。当前 Agent-managed Background Task、有限 Cron、Outbox、租约心跳、单主机 SQLite Queue、指标和 DLQ 运维接口已实现。
-- Anthropic 真实端点 Online Contract 和延迟/成本证据。
+- 固定 M1 DeepSeek Online Gate 已通过；更多 Provider、长期延迟/成本趋势属于后续产品运维。
 - Approval/Audit/Tool Execution Store 的生产数据库 Adapter；当前持久化基线是租户隔离的本地文件。
 - 生产数据库/对象存储 Adapter、跨主机 Session 租约和本地残留锁回收。
 

@@ -21,6 +21,7 @@ import {
 import type {
 	AgentRuntimePort,
 	RuntimeHealth,
+	RuntimeTraceStore,
 	RuntimeTurnRequest,
 	RuntimeTurnResult,
 } from "../../src/runtime/contracts";
@@ -39,12 +40,14 @@ export interface BlackxAgentRuntimeOptions {
 	executions?: AgentToolExecutionStore;
 	sessions?: AgentSessionStore;
 	snapshots?: ContextSnapshotStore;
+	traces?: RuntimeTraceStore;
 	maxIterations?: number;
 	maxToolExecutions?: number;
 	maxInputTokens?: number;
 	compactTriggerTokens?: number;
 	compactTargetTokens?: number;
 	now?: () => string;
+	clockMs?: () => number;
 }
 
 function classifyFailure(error: unknown, timedOut: boolean, cancelled: boolean): RuntimeFailure {
@@ -100,14 +103,18 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 	private readonly sessions: AgentSessionStore;
 	private readonly snapshots: ContextSnapshotStore;
 	private readonly executions: AgentToolExecutionStore;
+	private readonly traces: RuntimeTraceStore;
 	private readonly now: () => string;
+	private readonly clockMs: () => number;
 
 	constructor(private readonly options: BlackxAgentRuntimeOptions) {
 		const memory = new InMemoryAgentStateStore();
 		this.sessions = options.sessions ?? memory;
 		this.snapshots = options.snapshots ?? memory;
 		this.executions = options.executions ?? memory;
+		this.traces = options.traces ?? memory;
 		this.now = options.now ?? (() => new Date().toISOString());
+		this.clockMs = options.clockMs ?? (() => Date.now());
 	}
 
 	async health(): Promise<RuntimeHealth> {
@@ -130,6 +137,12 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 		const combinedSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
 		const sessionId = request.sessionId ?? `session-${crypto.randomUUID()}`;
 		const executionId = crypto.randomUUID();
+		const startedAt = this.now();
+		const startedMs = this.clockMs();
+		let traceEvents: RuntimeTurnResult["events"] = [
+			{ type: "session.started", sessionId },
+			{ type: "turn.started" },
+		];
 		const snapshotBaseId = request.contextSnapshotId ?? `context-${executionId}`;
 		const scope = {
 			tenantId: request.tenantId,
@@ -146,13 +159,21 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 			const resuming = Boolean(request.resume && session.revision > 0);
 			const skills = this.options.skills.resolve(request.skills ?? []);
 			let removedMessages = 0;
-			let compactSummaries = 0;
 			let finalContextSnapshotId: string | undefined;
-			const snapshotEvents: RuntimeTurnResult["events"] = [];
+			const observationEvents: RuntimeTurnResult["events"] = [];
+			const observe = (event: RuntimeTurnResult["events"][number]) => {
+				observationEvents.push(event);
+				traceEvents.push(event);
+			};
+			const modelStarted = new Map<number, number>();
 			const hooks = new AgentHooks(this.options.hooks);
 			hooks.on("compact.after", (event) => {
 				removedMessages += event.removedMessages;
-				if (event.summary) compactSummaries += 1;
+				observe({
+					type: "context.compacted",
+					removedMessages: event.removedMessages,
+					summaries: event.summary ? 1 : 0,
+				});
 			});
 			hooks.on("model.before", (event) => {
 				const snapshotId = `${snapshotBaseId}-i${event.iteration}${event.attempt > 1 ? `-retry${event.attempt}` : ""}`;
@@ -175,7 +196,18 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 					createdAt: this.now(),
 				});
 				finalContextSnapshotId = saved.snapshotId;
-				snapshotEvents.push({ type: "context.snapshot.saved", snapshotId: saved.snapshotId, iteration: saved.iteration });
+				observe({ type: "context.snapshot.saved", snapshotId: saved.snapshotId, iteration: saved.iteration });
+				modelStarted.set(event.iteration, this.clockMs());
+				observe({ type: "model.started", iteration: event.iteration, attempt: event.attempt });
+			});
+			hooks.on("model.after", (event) => {
+				const completedAt = this.clockMs();
+				observe({
+					type: "model.completed",
+					iteration: event.iteration,
+					durationMs: Math.max(0, completedAt - (modelStarted.get(event.iteration) ?? completedAt)),
+					usage: { ...event.response.usage },
+				});
 			});
 			const loop = new AgentLoop({
 				provider: this.options.provider,
@@ -222,7 +254,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 					})),
 				this.now(),
 			);
-			return {
+			const response: RuntimeTurnResult = {
 				executionId,
 				adapter: "blackx-agent",
 				status: result.stopReason === "completed" ? "completed" : "paused",
@@ -232,10 +264,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				events: [
 					{ type: "session.started", sessionId },
 					{ type: "turn.started" },
-					...snapshotEvents,
-					...(result.removedMessages > 0
-						? [{ type: "context.compacted" as const, removedMessages: result.removedMessages, summaries: result.compactSummaries }]
-						: []),
+					...observationEvents,
 					...result.toolExecutions.flatMap((execution) => [
 						{
 							type: "tool.started" as const,
@@ -265,8 +294,49 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				],
 				usage: result.usage,
 			};
+			traceEvents = response.events;
+			this.traces.putTrace({
+				schemaVersion: "runtime-trace.v1",
+				tenantId: request.tenantId,
+				workspaceId: request.workspaceId,
+				runId: request.runId,
+				stageId: request.stageId,
+				actorId: request.actorId,
+				executionId,
+				idempotencyKey: request.idempotencyKey,
+				status: response.status,
+				startedAt,
+				completedAt: this.now(),
+				durationMs: Math.max(0, this.clockMs() - startedMs),
+				sessionId,
+				contextSnapshotId: response.contextSnapshotId,
+				events: response.events.map((event) => event.type === "message.completed"
+					? { ...event, text: "[stored in session]" }
+					: event),
+				usage: response.usage,
+			});
+			return response;
 		} catch (error) {
-			throw classifyFailure(error, timedOut, Boolean(signal?.aborted));
+			const failure = classifyFailure(error, timedOut, Boolean(signal?.aborted));
+			traceEvents = [...traceEvents, { type: "turn.failed", message: failure.message }];
+			this.traces.putTrace({
+				schemaVersion: "runtime-trace.v1",
+				tenantId: request.tenantId,
+				workspaceId: request.workspaceId,
+				runId: request.runId,
+				stageId: request.stageId,
+				actorId: request.actorId,
+				executionId,
+				idempotencyKey: request.idempotencyKey,
+				status: "failed",
+				startedAt,
+				completedAt: this.now(),
+				durationMs: Math.max(0, this.clockMs() - startedMs),
+				sessionId,
+				events: traceEvents,
+				failure: { code: failure.code, retryable: failure.retryable, message: failure.message },
+			});
+			throw failure;
 		} finally {
 			clearTimeout(timer);
 		}

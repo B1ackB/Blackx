@@ -88,6 +88,7 @@ Web UI 使用以下服务端会话接口，并固定携带 Tenant、Workspace �
 GET  /api/conversations
 POST /api/conversations
 GET  /api/conversations/{conversationId}
+GET  /api/conversations/{conversationId}/traces
 POST /api/conversations/{conversationId}/messages
 POST /api/conversations/{conversationId}/background-tasks
 GET  /api/conversations/{conversationId}/background-tasks
@@ -110,7 +111,13 @@ BLACKX_EVAL_BASE_URL=http://127.0.0.1:5173 npm run eval:online
 
 # 直接验证自研 Core 的 Anthropic Token Count、摘要 Compact 和 Tool Loop
 npm run eval:anthropic-contract
+
+# 行业无关 M1 Tool Loop、Evidence Artifact 和 Fact Lineage
+npm run eval:m1
+npm run eval:m1-online
 ```
+
+`eval:m1-online` 直接使用当前 Shell 中的 Anthropic-compatible 配置，不要求先启动 Web 服务。设置 `BLACKX_EVAL_REPORT_PATH` 可以把不含 Secret 的 JSON 报告写入指定路径。
 
 `eval:anthropic-contract` 在未配置时默认使用官方 `https://api.anthropic.com` 与 `claude-haiku-4-5-20251001`，但生产或长期回归应显式固定 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_MODEL`。失败报告只保留标准化 Runtime/Provider code 和状态，不输出 API Key 或 Provider 原始正文。`providerStatus` 表示真实上游 HTTP 状态，`adapterStatus` 表示 Adapter 在 HTTP 成功后产生的本地 Contract 状态。
 
@@ -234,7 +241,7 @@ GET  /api/stage-jobs/dead-letter
 POST /api/stage-jobs/{jobId}/redrive
 ```
 
-redrive 请求体必须包含当前 Job 的 `expectedUpdatedAt` 和人工原因 `reason`，可选 `additionalSlices` 为 1–32。它只允许重放当前租户/工作区中的 `dead_letter` Job，复用原 Job、Command 和 Session 身份，并记录 Actor、原因、时间与 redrive 次数。
+redrive 请求体必须包含当前 Job 的 `expectedUpdatedAt` 和人工原因 `reason`，可选 `additionalSlices` 为 1–32。它只允许重放当前租户/工作区中的 `dead_letter` Job，复用原 Job、Command 和 Session 身份，并记录 Actor、原因、时间与 redrive 次数。租约过期恢复另外记录 `recoveryCount`、前任 Worker、过期时间、恢复时间和检测延迟；metrics 汇总 `recoveries` 与 `recoveryDetectionDelayMs`。
 
 `BLACKX_STAGE_JOB_QUEUE_DRIVER=file` 是默认本地 Adapter。设置为 `sqlite` 时，`BLACKX_STAGE_JOB_QUEUE_PATH` 应指向 `.sqlite` 文件；该实现支持单主机多 Worker 的事务 claim，但仍不是多主机分布式 Queue。当前 Node 的 `node:sqlite` 仍可能显示 experimental warning。
 

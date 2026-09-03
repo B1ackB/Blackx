@@ -7,6 +7,8 @@
 
 ## D1：首个包装品类为封口袋
 
+范围说明：本决策继续约束 Print Domain Pack，但已不再定义通用 M1/M2 的里程碑方向，见 D8。
+
 首个 Domain Vertical 定位为封口袋，不再以折叠纸盒作为首个品类。
 
 封口袋方案采用行业标准优先。标准元数据、适用范围、技术要求和试验方法进入版本化 `StandardsRegistry`；确定性 `StandardsRouter` 根据已验证的用途事实选择适用标准并生成 `ApplicableStandardsProfile`。详细规则见 [`sealing-bag-standards.md`](sealing-bag-standards.md)。
@@ -104,9 +106,20 @@ Blackx 不再以 Codex SDK 作为运行时基线。Agent Core 由项目自研，
 
 Enterprise Layer 与 Print Domain Pack 边界保持不变。Agent Session 只作为 Runtime Resume Handle；Run、Stage、Fact、Artifact、Approval、Evaluation 和恢复仍由 Event Store 与 Checkpoint 决定。详细迁移记录见 [`ADR-0001`](adr/0001-self-owned-agent-core.md)。
 
+## D8：M1/M2 转为行业无关 Runtime 与真实产品闭环
+
+状态：Accepted
+确认日期：2026-09-03
+
+M1 定义为 `Durable Single-Agent Runtime`，使用行业无关 Fixture 验证排队、execution slice、恢复、幂等、Fact/Artifact、Evaluation 和 Approval。M2 定义为首个真实产品纵向闭环；具体产品想法冻结前，以 `Research Task → Evidence-backed Report Artifact` 作为参考 Fixture。
+
+Print Proposal、封口袋标准和已有实现继续作为 Print Domain Pack 与回归资产，但不再阻塞通用 M1/M2。上层 RSI 暂不实现；只有 M2 形成稳定 Baseline、M3 形成生产控制面后，才能以隔离 Eval、审批、Canary 和回滚方式启动。
+
+M1 不要求多主机分布式存储。生产阶段优先通过 Port 接入 PostgreSQL、S3-compatible Object Store 和成熟 Queue；Blackx 不自研分布式数据库、共识协议或跨组件全局事务。
+
 ## 尚未确认
 
-- 封口袋首个验收 Fixture 的用途、内容物、接触类型和加工条件
 - Node.js、包管理器与 Monorepo 工具的固定版本
-- M1 的生产数据库与对象存储 Adapter
+- M2 的首个真实用户、任务、Tool、Artifact 和完成 Evaluator
+- M3 的 PostgreSQL、对象存储和 Queue 生产 Adapter 选型
 - OpenAI 与 Anthropic Online Eval 使用的具体模型和预算门槛

@@ -140,6 +140,18 @@ export class ConversationApiController {
 		}
 	}
 
+	traces(context: ConversationApiContext, conversationId: unknown): ConversationApiResponse {
+		try {
+			const target = scope(context, conversationId);
+			if (!this.sessions.getSession(target)) {
+				return { status: 404, body: { code: "conversation_not_found" } };
+			}
+			return { status: 200, body: { traces: this.sessions.listTraces(target) } };
+		} catch (error) {
+			return this.failure(error, "runtime_trace_list_failed");
+		}
+	}
+
 	async send(
 		context: ConversationApiContext,
 		conversationId: unknown,
