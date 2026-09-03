@@ -1,0 +1,6 @@
+.DS_Store
+/temp/
+/node_modules/
+/dist/
+/.blackx-data/
+*.tsbuildinfo

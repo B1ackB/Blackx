@@ -1,0 +1,97 @@
+import { createHash } from "node:crypto";
+import type {
+	EnterpriseEventStore,
+	OutboxMessage,
+	StageJobDispatch,
+} from "../../src/enterprise/contracts";
+import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
+import { StageJobQueueError, type StageJob, type StageJobQueue } from "../../src/enterprise/stageJobQueue";
+import type { ProposalWorkerCommand } from "./proposalWorker";
+
+export interface ProposalStageJobOptions {
+	priority?: number;
+	maxFailures?: number;
+	maxSlices?: number;
+}
+
+function digest(command: ProposalWorkerCommand): string {
+	return createHash("sha256")
+		.update(JSON.stringify([
+			command.tenantId,
+			command.workspaceId,
+			command.runId,
+			"proposal",
+			command.commandId,
+		]))
+		.digest("hex")
+		.slice(0, 32);
+}
+
+export function proposalStageJob(
+	command: ProposalWorkerCommand,
+	options: ProposalStageJobOptions = {},
+): StageJobDispatch {
+	const id = digest(command);
+	return {
+		...command,
+		jobId: `proposal-${id}`,
+		stageId: "proposal",
+		sessionId: `proposal-${id}`,
+		priority: options.priority ?? 0,
+		maxFailures: options.maxFailures ?? 5,
+		maxSlices: options.maxSlices ?? 32,
+	};
+}
+
+export type OutboxDispatchResult =
+	| { status: "idle" }
+	| { status: "published"; message: OutboxMessage; job: StageJob }
+	| { status: "retry_scheduled"; message: OutboxMessage };
+
+export class StageJobOutbox {
+	constructor(
+		private readonly engine: ProposalRunEngine,
+		private readonly store: EnterpriseEventStore,
+		private readonly queue: StageJobQueue,
+		private readonly options: ProposalStageJobOptions = {},
+	) {}
+
+	requestProposal(command: ProposalWorkerCommand): OutboxMessage {
+		const payload = proposalStageJob({
+			...command,
+			expectedVersion: command.expectedVersion + 1,
+		}, this.options);
+		return this.engine.requestProposalJob(
+			{ ...command, actorId: "blackx-run-engine" },
+			{
+				messageId: `outbox-${payload.jobId}`,
+				topic: "stage-job.requested",
+				payload,
+			},
+		).message;
+	}
+
+	dispatchOne(): OutboxDispatchResult {
+		const message = this.store.readPendingOutbox(1)[0];
+		if (!message) return { status: "idle" };
+		try {
+			const job = this.queue.enqueue(message.payload);
+			return {
+				status: "published",
+				message: this.store.markOutboxPublished(message.messageId),
+				job,
+			};
+		} catch (error) {
+			const failure = error instanceof StageJobQueueError
+				? { code: error.code, message: error.message }
+				: { code: "outbox_delivery_failed", message: "Stage Job Outbox delivery failed" };
+			return {
+				status: "retry_scheduled",
+				message: this.store.markOutboxFailed(message.messageId, {
+					...failure,
+					delayMs: Math.min(30_000, 250 * 2 ** message.deliveryCount),
+				}),
+			};
+		}
+	}
+}

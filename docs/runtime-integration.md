@@ -1,0 +1,64 @@
+# Blackx Agent Runtime 集成边界
+
+状态：Self-owned Offline Baseline Implemented
+更新日期：2026-09-03
+
+## 当前链路
+
+```text
+React UI → Conversation API / Background Task API / Proposal Worker
+→ AgentRuntimePort
+→ BlackxAgentRuntime
+→ SkillRegistry + ContextEngine + AgentHooks
+→ AgentLoop
+   ├─ AgentModelProvider
+   ├─ AgentModelProvider Token Count / Context Summarizer
+	   └─ validated Tool → Approval Port → Audit Port → Tool Execution Store
+→ ContextSnapshotStore（每次 Model 调用前）
+→ AgentSessionStore（Turn 成功后）
+```
+
+Web Conversation API 在模型调用前先把当前用户消息以 `pinned` 状态写入 Session，再以 `resume: true` 执行本轮；这样当前输入在 Compact 中不可丢失。Turn 成功后 Runtime 保存 Assistant 消息并解除临时 pin。UI 会话列表和历史只读取服务端 Session，不读取旧 `localStorage`。
+
+Background Task 不会创建另一套 Agent：受限的 `conversation.message.v1` payload 写入现有 `StageJobQueue`，Scheduler 通过 `conversation-background` handler 调用同一个 `ConversationApiController`。消息 ID 同时是 Turn 幂等键；Worker Crash 后重投会继续未完成 Turn，而模型回复已落盘但 Queue 尚未 ACK 时会直接复用完成结果。普通发送仍走同步 Conversation API，以保留低延迟交互。
+
+Agent 现在也可在普通 Loop 内自主调用 `background_task_*` 和 `cron_*` 工具。模型只负责选择工具与生成候选参数；服务端 Tool Schema、固定 allowlist、bounded-automation policy、持久 Audit 和 Tool Execution Ledger 是执行权威。Cron Store 持久化表达式、IANA timezone、有限 `maxRuns` 和下一次触发时间；Dispatcher 使用确定性 occurrence ID 先投递、后 ACK，保持 at-least-once。Cron 只能投递注册的会话任务，不能执行 shell。
+
+默认 `FakeAgentRuntime` 使用确定性 Fake Model。Online 模式由 `AnthropicModelProvider` 直接调用 Anthropic Messages compatible endpoint，不使用 Codex SDK 或本机 Responses 网关。
+
+## Core 节点
+
+- Loop：单个 execution slice 默认最多 32 次 Model 调用和 64 次 Tool 执行；无 Tool Call 且存在文本时完成。达到 slice 边界后返回 `paused` 并保存 Session，直接调用方以同一 `sessionId + resume: true` 继续；leased scheduler 以确定性 Session 和 `resume: "if-present"` 覆盖首次执行与 Crash 恢复，两者都不会重复追加用户输入。
+- Hook：`loop/model/tool/compact` 的 before/after 和 completed/failed 观察事件，按注册顺序执行，不允许覆盖权威状态。
+- Context：稳定指令、选中的 Skill、Session 历史和当前输入显式编译。
+- Skill：进程启动时注册名称、版本和指令，Turn 只传 Skill 名称；未知 Skill fail-closed，快照记录实际 Skill 版本。
+- Compact：真实 Token Count 优先；默认在输入硬预算 70% 触发并压缩到 45%，字符预算只在 Provider 没有 Token Count 时回退。开放 Tool Batch、pinned 内容和 durable execution receipt 不得删除；仅 transient 对话由 Model Context Summarizer 生成带非权威标记的摘要。`context_window_exceeded` 只允许一次压缩重试。
+- Tool：必须声明 Schema、风险、幂等、超时、结果上限和输入校验。read Tool 可直接执行；write/publish Tool 默认拒绝，必须同时获得 Runtime Policy、Approval、Audit 和 Tool Execution Store。Store 在副作用前原子占用业务幂等键，重复成功请求复用旧结果，未决执行返回 `tool_execution_unknown`，不得自动重放。
+- Identity：`actorId` 标识用户、Worker 或 Service Actor，并贯穿 Approval、Tool Context、Audit 与 Execution Record；`toolCallId` 一对一配对 Tool Call/Result，`idempotencyKey` 一对多关联重试 attempt，但最多产生一次成功副作用。
+- Session：按 `tenantId/workspaceId/runId/sessionId` 隔离，成功 Turn 使用 revision compare-and-swap 保存；冲突显式返回 `session_conflict`。
+- ContextSnapshot：在每次 Model 调用前不可变保存最终消息、Skill 版本、字符估算和累计 Compact 删除量；即使 Provider 调用失败也保留该次模型输入证据。
+
+## Enterprise 边界
+
+Agent Session ID 只是 Runtime Resume Handle。Run、Stage、Fact、Artifact、Approval、Evaluation 和恢复继续由 Event Store、Artifact Store 与 Runtime Checkpoint 决定。模型完成一个 Turn 不等于业务 Stage 完成。
+
+默认服务端使用 `FileAgentStateStore`，路径为 `.blackx-data/agent`，可由 `BLACKX_AGENT_STATE_PATH` 覆盖。Proposal Worker 的跨进程恢复仍以 Event Store、Artifact 和 `proposal-runtime-checkpoint.v2` 为业务权威；Checkpoint 同时保存最终 `contextSnapshotId`，Artifact Version 记录该引用。Agent Session 不能替代 Run/Stage 状态。
+
+RunEngine 在同一次 Event Store append 中写入 `stage.execution_requested` 和 Outbox。Dispatcher 以 at-least-once 语义把确定性 Job 投递给 `StageJobQueue`；Scheduler 每次只执行一个 slice，期间续租，`paused` 后保存 continuation 并释放 Worker。默认文件 Queue 面向本地开发；显式 SQLite Adapter 支持单主机多 Worker 事务 claim。Worker 并发不是 Sub-agent：当前仍只有一个 Proposal Agent Session，没有独立 Agent 目标、消息总线或聚合协议。
+
+## Provider 和 Secret
+
+- `ANTHROPIC_API_KEY` 只由服务端 `AnthropicMessagesClient` 读取。
+- `AnthropicModelProvider` 同时调用 Messages 与 `/v1/messages/count_tokens`，Provider DTO 不进入 Core Contract。
+- Provider DTO 不进入 Enterprise Layer 或 Print Domain。
+- 默认 Fake 不读取 Secret。
+- Online 模式缺少 Base URL、Model 或 Key 时启动失败。
+
+## 尚未完成
+
+- 流式 Token、并行 Tool、跨主机生产 Queue/Schedule Adapter、任意脚本任务、Sub-agent 与 Agent Teams。当前 Agent-managed Background Task、有限 Cron、Outbox、租约心跳、单主机 SQLite Queue、指标和 DLQ 运维接口已实现。
+- Anthropic 真实端点 Online Contract 和延迟/成本证据。
+- Approval/Audit/Tool Execution Store 的生产数据库 Adapter；当前持久化基线是租户隔离的本地文件。
+- 生产数据库/对象存储 Adapter、跨主机 Session 租约和本地残留锁回收。
+
+详细决策见 [`ADR-0001`](adr/0001-self-owned-agent-core.md)、[`ADR-0002`](adr/0002-m0-write-tools-summary-compact.md)、[`ADR-0003`](adr/0003-durable-context-and-execution-slices.md)、[`ADR-0004`](adr/0004-leased-stage-job-scheduler.md)、[`ADR-0005`](adr/0005-transactional-outbox-and-queue-operations.md) 与 [`ADR-0006`](adr/0006-agent-managed-background-and-cron.md)。
