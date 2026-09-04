@@ -117,12 +117,3 @@ export function applyRuntimeResult(
     },
   ];
 }
-
-export function runtimeFailureEvent(code: string): DomainEvent {
-  return {
-    id: `evt-${crypto.randomUUID()}`,
-    at: new Date().toISOString(),
-    type: "runtime.execution.failed",
-    code,
-  };
-}

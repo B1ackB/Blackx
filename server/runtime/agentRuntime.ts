@@ -1,16 +1,7 @@
-import type {
-	AgentContextSummarizer,
-	AgentMessage,
-	AgentModelProvider,
-	AgentTool,
-	AgentToolApprovalPort,
-	AgentToolAuditPort,
-	AgentToolExecutionStore,
-} from "../../src/agent/contracts";
+import type { AgentToolExecutionStore } from "../../src/agent/contracts";
 import { AgentCoreError } from "../../src/agent/contracts";
-import { ContextEngine } from "../../src/agent/context";
 import { AgentHooks } from "../../src/agent/hooks";
-import { AgentLoop } from "../../src/agent/loop";
+import { abortable, AgentLoop, type AgentLoopOptions } from "../../src/agent/loop";
 import { SkillRegistry } from "../../src/agent/skills";
 import {
 	AgentStateStoreError,
@@ -28,25 +19,11 @@ import type {
 import { RuntimeFailure } from "../../src/runtime/contracts";
 import { AnthropicCompatibilityError } from "../anthropic/client";
 
-export interface BlackxAgentRuntimeOptions {
-	provider: AgentModelProvider;
+export interface BlackxAgentRuntimeOptions extends AgentLoopOptions {
 	skills: SkillRegistry;
-	tools?: readonly AgentTool[];
-	hooks?: AgentHooks;
-	context?: ContextEngine;
-	summarizer?: AgentContextSummarizer;
-	approval?: AgentToolApprovalPort;
-	audit?: AgentToolAuditPort;
-	executions?: AgentToolExecutionStore;
 	sessions?: AgentSessionStore;
 	snapshots?: ContextSnapshotStore;
 	traces?: RuntimeTraceStore;
-	maxIterations?: number;
-	maxToolExecutions?: number;
-	maxInputTokens?: number;
-	compactTriggerTokens?: number;
-	compactTargetTokens?: number;
-	now?: () => string;
 	clockMs?: () => number;
 }
 
@@ -88,15 +65,6 @@ function classifyFailure(error: unknown, timedOut: boolean, cancelled: boolean):
 		return new RuntimeFailure("invalid_output", message, true, { cause: error });
 	}
 	return new RuntimeFailure("execution_failed", "Agent execution failed", true, { cause: error });
-}
-
-async function abortable<Value>(promise: Promise<Value>, signal: AbortSignal): Promise<Value> {
-	if (signal.aborted) throw signal.reason;
-	return new Promise<Value>((resolve, reject) => {
-		const aborted = () => reject(signal.reason);
-		signal.addEventListener("abort", aborted, { once: true });
-		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
-	});
 }
 
 export class BlackxAgentRuntime implements AgentRuntimePort {

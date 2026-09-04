@@ -30,7 +30,6 @@ import { CronApiController } from "./workers/cronApi";
 import { ProposalWorkspaceApiController } from "./enterprise/proposalWorkspaceApi";
 import { researchSourceTool } from "./runtime/researchTools";
 
-const workingDirectory = resolve(process.cwd());
 const port = Number(process.env.BLACKX_PORT ?? 5173);
 const eventStore = new FileEnterpriseEventStore(
 	resolve(
