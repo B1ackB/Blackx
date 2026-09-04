@@ -32,7 +32,7 @@ function addUsage(total: AgentUsage, next: AgentUsage): void {
 	total.reasoningOutputTokens += next.reasoningOutputTokens;
 }
 
-async function abortable<Value>(promise: Promise<Value>, signal: AbortSignal): Promise<Value> {
+export async function abortable<Value>(promise: Promise<Value>, signal: AbortSignal): Promise<Value> {
 	if (signal.aborted) throw signal.reason;
 	return new Promise<Value>((resolve, reject) => {
 		const aborted = () => reject(signal.reason);

@@ -117,7 +117,7 @@ describe("ConversationApiController", () => {
 			unblock = resolve;
 		});
 		const provider: AgentModelProvider = {
-			async generate(request) {
+			async generate() {
 				generateCount += 1;
 				release();
 				await blocked;
