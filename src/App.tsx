@@ -1,4 +1,14 @@
+import { ModelMonitor } from "./components/ModelMonitor";
+import { FileExplorer } from "./components/FileExplorer";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { Markdown } from "./components/Markdown";
+import { ConversationFiles } from "./components/ConversationFiles";
+import { DeleteConversationDialog } from "./components/DeleteConversationDialog";
+import { DeliveryPreview } from "./components/DeliveryPreview";
+import { requirementFieldLabels, factStatusLabels, inspectionStatusLabels } from "./manufacturing/requirementDelivery";
+import type { AssetInspectionRecord } from "./runtime/assetInspection";
+import { requiredRequirementFacts } from "./manufacturing/requirementBrief";
+import type { RuntimeActivity } from "./runtime/conversationContracts";
 import type { RuntimeHealth } from "./runtime/contracts";
 import { ConversationClient, ConversationClientError } from "./runtime/conversationClient";
 import type {
@@ -12,7 +22,6 @@ import type {
 	RequirementBriefWorkspaceView,
 } from "./runtime/conversationContracts";
 import type {
-	ManufacturingIndustry,
 	RequirementBriefEvaluation,
 	RequirementBriefV1,
 } from "./manufacturing/requirementBrief";
@@ -21,7 +30,7 @@ const client = new ConversationClient();
 let bootstrapPromise: Promise<{
 	health: RuntimeHealth;
 	conversations: ConversationSummary[];
-	active: ConversationView;
+	active: ConversationView | undefined;
 }> | undefined;
 
 function summary(conversation: ConversationView): ConversationSummary {
@@ -40,10 +49,10 @@ async function bootstrap() {
 			const [health, existing] = await Promise.all([client.health(), client.list()]);
 			const active = existing[0]
 				? await client.get(existing[0].conversationId)
-				: await client.create();
+				: undefined;
 			return {
 				health,
-				conversations: existing.length ? existing : [summary(active)],
+				conversations: existing,
 				active,
 			};
 		})();
@@ -99,7 +108,7 @@ const stageLabels = {
 	running: "正在生成",
 	evaluating: "正在评测",
 	needs_input: "需要补充/确认",
-	waiting_approval: "等待 Approval A",
+	waiting_approval: "等待批准",
 	revision_required: "需要修订",
 	cancelled: "已取消",
 	passed: "已通过",
@@ -107,11 +116,30 @@ const stageLabels = {
 } as const;
 
 function App() {
+	const [panelTab, setPanelTab] = useState<"requirement" | "models" | "files">("requirement");
+	const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 760);
+	const [reviewOpen, setReviewOpen] = useState(() => window.innerWidth >= 1180);
+	const [activity, setActivity] = useState<RuntimeActivity>();
+	const [requirementActivity, setRequirementActivity] = useState<RuntimeActivity>();
 	const [health, setHealth] = useState<RuntimeHealth>();
 	const [conversations, setConversations] = useState<ConversationSummary[]>([]);
 	const [active, setActive] = useState<ConversationView>();
+	const activeIdRef = useRef<string | undefined>(undefined);
+	const deletedIds = useRef(new Set<string>());
+	const selectionVersion = useRef(0);
+	const [pendingDelete, setPendingDelete] = useState<ConversationSummary>();
+	const [deleting, setDeleting] = useState(false);
+	const [deleteError, setDeleteError] = useState<string>();
+	const activate = (conversation?: ConversationView) => {
+		activeIdRef.current = conversation?.conversationId;
+		setActive(conversation);
+	};
+	const updateActive = (conversation: ConversationView) => {
+		if (activeIdRef.current === conversation.conversationId && !deletedIds.current.has(conversation.conversationId)) setActive(conversation);
+	};
 	const [draft, setDraft] = useState("");
 	const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
+	const [parsedSources, setParsedSources] = useState<AssetInspectionRecord[]>([]);
 	const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
 	const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
 	const [uploading, setUploading] = useState(false);
@@ -122,13 +150,13 @@ function App() {
 	const [requirement, setRequirement] = useState<RequirementBriefWorkspaceView>();
 	const [requirementMetrics, setRequirementMetrics] = useState<RequirementBriefMetricsSeriesView>();
 	const [requirementBusy, setRequirementBusy] = useState(false);
-	const [industry, setIndustry] = useState<ManufacturingIndustry>("print");
 	const [factKey, setFactKey] = useState("");
 	const [factValue, setFactValue] = useState("");
 	const [factUnit, setFactUnit] = useState("");
 	const [error, setError] = useState<string>();
 	const chatScrollRef = useRef<HTMLElement>(null);
 	const followChatRef = useRef(true);
+	const newConversationRef = useRef<HTMLButtonElement>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -137,7 +165,7 @@ function App() {
 				if (cancelled) return;
 				setHealth(result.health);
 				setConversations(result.conversations);
-				setActive(result.active);
+				activate(result.active);
 			})
 			.catch((reason) => {
 				if (!cancelled) setError(errorMessage(reason));
@@ -170,10 +198,11 @@ function App() {
 	}, [active?.conversationId, active?.revision]);
 
 	useEffect(() => {
+		setAttachments([]);
+		setParsedSources([]);
+		setSelectedAttachmentIds([]);
 		if (!active) return;
 		let cancelled = false;
-		setAttachments([]);
-		setSelectedAttachmentIds([]);
 		void client.listAttachments(active.conversationId)
 			.then((items) => {
 				if (!cancelled) setAttachments(items);
@@ -187,10 +216,10 @@ function App() {
 	}, [active?.conversationId]);
 
 	useEffect(() => {
+		setAttachmentPreviews({});
 		if (!active) return;
 		let cancelled = false;
 		const objectUrls: string[] = [];
-		setAttachmentPreviews({});
 		void Promise.all(attachments
 			.filter((attachment) => attachment.kind === "image")
 			.map(async (attachment) => {
@@ -218,15 +247,13 @@ function App() {
 	}, [active?.conversationId, attachments]);
 
 	useEffect(() => {
+		setRequirement(undefined);
 		if (!active) return;
 		let cancelled = false;
-		setRequirement(undefined);
 		void client.getRequirementBrief(active.conversationId)
 			.then((next) => {
 				if (!cancelled) {
 					setRequirement(next ?? undefined);
-					const selected = next?.state.facts.industry?.value;
-					if (selected === "print" || selected === "furniture") setIndustry(selected);
 				}
 			})
 			.catch((reason) => {
@@ -238,24 +265,26 @@ function App() {
 	}, [active?.conversationId]);
 
 	useEffect(() => {
-		if (!active || !requirement) return;
+		if (!active || !requirement || requirement.readOnlyReason) return;
 		const waiting = requirement.state.stageStatus === "running" && requirement.job?.status !== "dead_letter" ||
 			requirement.state.stageStatus === "evaluating" ||
 			requirement.job?.status === "queued" ||
 			requirement.job?.status === "leased" ||
 			requirement.state.stageStatus === "waiting_approval" && requirement.state.approval?.status === "approved";
 		if (!waiting) return;
+		let cancelled = false;
 		const timer = window.setTimeout(() => {
 			void client.getRequirementBrief(active.conversationId)
 				.then((next) => {
+					if (cancelled) return;
 					if (next) setRequirement(next);
 					if (next?.job?.status === "dead_letter") {
 						setError(`Requirement Worker 失败：${next.job.lastFailure?.message ?? "已进入死信队列"}`);
 					}
 				})
-				.catch((reason) => setError(errorMessage(reason)));
+				.catch((reason) => { if (!cancelled) setError(errorMessage(reason)); });
 		}, 750);
-		return () => window.clearTimeout(timer);
+		return () => { cancelled = true; window.clearTimeout(timer); };
 	}, [active?.conversationId, requirement]);
 
 	useEffect(() => {
@@ -273,6 +302,7 @@ function App() {
 	}, [conversations.length, requirement?.state.aggregateVersion]);
 
 	useEffect(() => {
+		setCronSchedules([]);
 		if (!active) return;
 		let cancelled = false;
 		void client.listCronSchedules(active.conversationId)
@@ -290,9 +320,11 @@ function App() {
 	useEffect(() => {
 		const pending = backgroundTasks.filter((task) => task.status === "queued" || task.status === "leased");
 		if (!pending.length) return;
+		let cancelled = false;
 		const timer = window.setTimeout(() => {
 			void Promise.all(pending.map((task) => client.getBackgroundTask(task.taskId)))
 				.then(async (updatedTasks) => {
+					if (cancelled) return;
 					setBackgroundTasks((current) => current.map((task) =>
 						updatedTasks.find((updated) => updated.taskId === task.taskId) ?? task,
 					));
@@ -301,15 +333,16 @@ function App() {
 					);
 					if (completedActiveTask && active) {
 						const updated = await client.get(active.conversationId);
-						setActive(updated);
+						if (cancelled) return;
+						updateActive(updated);
 						await refreshList(updated);
 					}
 					const failed = updatedTasks.find((task) => task.status === "dead_letter");
 					if (failed) setError(`后台任务失败：${failed.lastFailure?.message ?? "已进入死信队列"}`);
 				})
-				.catch((reason) => setError(errorMessage(reason)));
+				.catch((reason) => { if (!cancelled) setError(errorMessage(reason)); });
 		}, 750);
-		return () => window.clearTimeout(timer);
+		return () => { cancelled = true; window.clearTimeout(timer); };
 	}, [backgroundTasks, active?.conversationId]);
 
 	useEffect(() => {
@@ -318,20 +351,22 @@ function App() {
 		view.scrollTo({ top: view.scrollHeight, behavior: "smooth" });
 	}, [active?.conversationId, active?.messages.length, sending]);
 
-	const refreshList = async (current: ConversationView) => {
+	const refreshList = async (_current: ConversationView) => {
 		const next = await client.list();
-		setConversations(next.some((item) => item.conversationId === current.conversationId)
-			? next
-			: [summary(current), ...next]);
+		setConversations(next.filter((item) => !deletedIds.current.has(item.conversationId)));
 	};
 
 	const createConversation = async () => {
-		if (sending) return;
+		if (sending || deleting) return;
+		const version = ++selectionVersion.current;
 		setError(undefined);
 		try {
 			const created = await client.create();
+			if (version !== selectionVersion.current) return;
 			followChatRef.current = true;
-			setActive(created);
+			activate(created);
+			setDraft("");
+			if (window.innerWidth < 760) setSidebarOpen(false);
 			setConversations((current) => [summary(created), ...current]);
 		} catch (reason) {
 			setError(errorMessage(reason));
@@ -339,14 +374,59 @@ function App() {
 	};
 
 	const selectConversation = async (conversationId: string) => {
-		if (sending || active?.conversationId === conversationId) return;
+		if (sending || deleting || deletedIds.current.has(conversationId)) return;
+		if (window.innerWidth < 760) setSidebarOpen(false);
+		if (active?.conversationId === conversationId) return;
 		setError(undefined);
+		const version = ++selectionVersion.current;
 		try {
 			followChatRef.current = true;
-			setActive(await client.get(conversationId));
+			const selected = await client.get(conversationId);
+			if (version !== selectionVersion.current || deletedIds.current.has(conversationId)) return;
+			activate(selected);
+			setDraft("");
 		} catch (reason) {
 			setError(errorMessage(reason));
 		}
+	};
+
+	const deleteConversation = async () => {
+		if (!pendingDelete || deleting || uploading || requirementBusy) return;
+		const conversationId = pendingDelete.conversationId;
+		++selectionVersion.current;
+		setDeleting(true);
+		setDeleteError(undefined);
+		try {
+			let warning: string | undefined;
+			try { await client.delete(conversationId); }
+			catch (reason) {
+				// Another tab may have deleted the same conversation already.
+				if (!(reason instanceof ConversationClientError) || !["conversation_not_found", "conversation_cleanup_pending"].includes(reason.code)) throw reason;
+				if (reason.code === "conversation_cleanup_pending") warning = reason.message;
+			}
+			setError(warning);
+			deletedIds.current.add(conversationId);
+			bootstrapPromise = undefined;
+			const remaining = conversations.filter((item) => !deletedIds.current.has(item.conversationId));
+			setConversations(remaining);
+			setBackgroundTasks((current) => current.filter((task) => task.conversationId !== conversationId));
+			if (activeIdRef.current === conversationId) {
+				activate(undefined);
+				setDraft(""); setSending(false); setRequirement(undefined);
+				setActivity(undefined); setRequirementActivity(undefined);
+				setAttachments([]); setSelectedAttachmentIds([]); setParsedSources([]); setAttachmentPreviews({});
+				setCronSchedules([]); setFactKey(""); setFactValue(""); setFactUnit("");
+				const index = conversations.findIndex((item) => item.conversationId === conversationId);
+				const next = remaining[Math.min(index, remaining.length - 1)];
+				if (next) {
+					try { activate(await client.get(next.conversationId)); }
+					catch (reason) { setError(errorMessage(reason)); }
+				}
+			}
+			setPendingDelete(undefined);
+			requestAnimationFrame(() => newConversationRef.current?.focus());
+		} catch (reason) { setDeleteError(errorMessage(reason)); }
+		finally { setDeleting(false); }
 	};
 
 	const send = async (raw: string) => {
@@ -379,13 +459,14 @@ function App() {
 				content,
 				attachmentIds: selectedAttachments.map((attachment) => attachment.attachmentId),
 			});
-			setActive(updated);
+			if (activeIdRef.current !== conversationId || deletedIds.current.has(conversationId)) return;
+			updateActive(updated);
 			setSelectedAttachmentIds([]);
 			await refreshList(updated);
 		} catch (reason) {
-			setError(errorMessage(reason));
+			if (activeIdRef.current === conversationId && !deletedIds.current.has(conversationId)) setError(errorMessage(reason));
 		} finally {
-			setSending(false);
+			if (activeIdRef.current === conversationId) setSending(false);
 		}
 	};
 
@@ -397,7 +478,6 @@ function App() {
 			setRequirement(await client.startRequirementBrief(
 				active.conversationId,
 				`requirement-${crypto.randomUUID()}`,
-				industry,
 			));
 		} catch (reason) {
 			setError(errorMessage(reason));
@@ -505,7 +585,7 @@ function App() {
 				`fact-${crypto.randomUUID()}`,
 				{
 					key: factKey.trim(),
-					value: factValue.trim(),
+					value: factKey === "quantity" ? Number(factValue) : factValue.trim(),
 					unit: factUnit.trim() || undefined,
 				},
 			));
@@ -554,61 +634,112 @@ function App() {
 	const facts = Object.values(requirement?.state.facts ?? {})
 		.filter((fact) => fact.key !== "customer_brief" && fact.key !== "industry" && fact.key !== "customer_attachments")
 		.sort((left, right) => left.key.localeCompare(right.key));
-	const requirementRunning = requirement?.state.stageStatus === "running" && requirement.job?.status !== "dead_letter" ||
+	const requirementRunning = !requirement?.readOnlyReason && (requirement?.state.stageStatus === "running" && requirement.job?.status !== "dead_letter" ||
 		requirement?.state.stageStatus === "evaluating" ||
 		requirement?.job?.status === "queued" ||
-		requirement?.job?.status === "leased";
+		requirement?.job?.status === "leased");
 	const requirementTerminal = requirement?.state.stageStatus === "passed" || requirement?.state.stageStatus === "cancelled";
 
+	useEffect(() => {
+		setActivity(undefined); setRequirementActivity(undefined);
+		if (!active) return;
+		let cancelled = false;
+		const update = async () => {
+			try {
+				const [chat, task, freshHealth] = await Promise.all([client.activity(active.conversationId), requirementRunning ? client.activity(active.conversationId, true) : undefined, client.health()]);
+				if (!cancelled) { setActivity(chat); setRequirementActivity(task); setHealth(freshHealth); }
+				if (!sending && chat && ["completed", "failed", "paused"].includes(chat.phase)) {
+					const restored = await client.get(active.conversationId);
+					if (!cancelled) setActive((current) => current?.conversationId === restored.conversationId && current.revision < restored.revision ? restored : current);
+				}
+			} catch { /* The next interaction reports connection errors; stale progress is cleared. */
+				if (!cancelled) { setActivity(undefined); setRequirementActivity(undefined); }
+			}
+		};
+		void update();
+		const timer = window.setInterval(() => void update(), 1000);
+		return () => { cancelled = true; window.clearInterval(timer); };
+	}, [active?.conversationId, sending, requirementRunning]);
+
+	useEffect(() => {
+		const resize = () => { if (window.innerWidth < 1180) setReviewOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); };
+		const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setReviewOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); } };
+		window.addEventListener("resize", resize); window.addEventListener("keydown", escape);
+		return () => { window.removeEventListener("resize", resize); window.removeEventListener("keydown", escape); };
+	}, []);
+
+	const retryReply = async () => {
+		if (!active || sending) return;
+		setSending(true); setError(undefined);
+		try { const updated = await client.retry(active.conversationId); updateActive(updated); await refreshList(updated); }
+		catch (reason) { if (activeIdRef.current === active.conversationId && !deletedIds.current.has(active.conversationId)) setError(errorMessage(reason)); }
+		finally { if (activeIdRef.current === active.conversationId) setSending(false); }
+	};
+	const stopReply = async () => {
+		if (!active) return;
+		try { await client.stop(active.conversationId); }
+		catch (reason) { setError(errorMessage(reason)); }
+	};
+	const progressLabel = (value?: RuntimeActivity) => value?.phase === "tool" ? `正在${value.tool === "asset_metadata_inspect" ? "解析附件" : value.tool === "project_source_read" ? "读取需求来源" : "执行工具"}${value.tool ? ` · ${value.tool}` : ""}` : value?.phase === "model" ? `正在分析${value.iteration ? ` · 第 ${value.iteration} 轮` : ""}` : "正在准备任务";
+	const replyRunning = sending || Boolean(activity && ["starting", "model", "tool"].includes(activity.phase));
+	const fieldOptions = requiredRequirementFacts.print;
+
 	return (
-		<div className="app-shell">
+		<div className={`app-shell ${sidebarOpen ? "sidebar-open" : ""} ${reviewOpen ? "review-open" : ""}`}>
+			<button className="drawer-backdrop" aria-label="关闭侧栏" onClick={() => { setReviewOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); }} />
 			<aside className="sidebar">
 				<div className="brand-lockup">
 					<span className="brand-mark" aria-hidden="true">Bx</span>
 					<div>
 						<strong>Blackx</strong>
-						<span>Agent Workspace</span>
+						<span>Packaging Workspace</span>
 					</div>
 				</div>
 
-				<button className="new-task" onClick={() => void createConversation()} disabled={sending}>
+				<button ref={newConversationRef} className="new-task" onClick={() => void createConversation()} disabled={sending || deleting || loading}>
 					<span>＋</span> 新建会话
 				</button>
 
 				<div className="history-label">会话历史</div>
 				<nav className="conversation-list" aria-label="会话历史">
+					{!loading && conversations.length === 0 && <p className="history-empty">暂无会话，新建一个开始吧。</p>}
 					{conversations.map((conversation) => (
+						<div className="conversation-item" key={conversation.conversationId}>
 						<button
-							key={conversation.conversationId}
 							className={active?.conversationId === conversation.conversationId ? "active" : ""}
 							onClick={() => void selectConversation(conversation.conversationId)}
-							disabled={sending}
+							disabled={sending || deleting}
 						>
 							<strong>{conversation.title}</strong>
 							<span>{conversation.preview}</span>
 							<small>{displayTime(conversation.updatedAt)} · {conversation.messageCount} 条</small>
 						</button>
+						<button className="delete-conversation" aria-label={`删除会话：${conversation.title}`} title="删除会话"
+							disabled={deleting || uploading || requirementBusy}
+							onClick={() => { setDeleteError(undefined); setPendingDelete(conversation); }}>
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>
+						</button>
+						</div>
 					))}
 				</nav>
 
 				<div className="sidebar-footer">
 					<div className="runtime-light">
 						<i className={realProvider ? "online" : "offline"} />
-						{realProvider ? "实际模型 API 已连接" : "实际模型 API 未连接"}
+						{!realProvider ? "模型尚未配置" : health?.providerStatus === "last_request_succeeded" ? "最近请求成功" : health?.providerStatus === "last_request_failed" ? "最近请求失败" : "模型已配置 · 待验证"}
 					</div>
-					<small>{health?.adapter ?? "正在检查 Runtime"}</small>
+					<details className="permission-summary"><summary>本地访问与工具权限</summary><p>会话身份由本机服务绑定。可读取本机真实文件；Agent 会在新建、修改或删除前展示具体路径和内容，等你单次批准后执行，并保留备份。附件解析禁止联网，事实仍需人工确认。</p></details>
 				</div>
 			</aside>
 
 			<main className="conversation">
 				<header className="topbar">
+					<button className="panel-toggle" aria-label="切换会话侧栏" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
 					<div>
-						<span className="eyebrow">SERVER-PERSISTED AGENT SESSION</span>
+						<span className="eyebrow">BLACKX WORKSPACE</span>
 						<h1>{active?.title ?? "Blackx 会话"}</h1>
 					</div>
-					<span className={`runtime-chip ${realProvider ? "online" : "offline"}`}>
-						{realProvider ? "LIVE API" : "API REQUIRED"}
-					</span>
+					<button className="panel-toggle review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen(!reviewOpen)}>工作区 · {{ requirement: "需求单", models: "模型", files: "文件" }[panelTab]}</button>
 				</header>
 
 				<section
@@ -632,9 +763,7 @@ function App() {
 											<strong>{message.role === "assistant" ? "Blackx" : "你"}</strong>
 											<time>{displayTime(message.createdAt)}</time>
 										</div>
-										{message.content.split("\n").map((line, index) => (
-											<p key={`${message.messageId}-${index}`}>{line || <br />}</p>
-										))}
+										<Markdown text={message.content} />
 										{message.attachments?.length ? (
 											<div className="message-attachments">
 												{message.attachments.map((attachment) => {
@@ -650,11 +779,11 @@ function App() {
 									</div>
 								</article>
 							))}
-							{(sending || hasActiveBackgroundTask) && (
+							{(replyRunning || hasActiveBackgroundTask) && (
 								<article className="message assistant thinking">
 									<div className="avatar">Bx</div>
 									<div>
-										<span>{hasActiveBackgroundTask ? "后台任务正在执行，可以切换会话" : "正在等待模型回复"}</span>
+										<span>{hasActiveBackgroundTask ? "后台任务正在执行，可以切换会话" : progressLabel(activity)}</span>
 										<div className="thinking-dots"><i /><i /><i /></div>
 									</div>
 								</article>
@@ -663,23 +792,25 @@ function App() {
 					) : (
 						<div className="empty-state">
 							<span className="empty-mark">Bx</span>
-							<h2>开始一个新的制造需求任务</h2>
-							<p>消息和模型回复会保存在服务端 Agent Session，不再使用浏览器 localStorage。</p>
-							<div className="prompt-grid">
-								<button onClick={() => void send("我想做一款500克咖啡豆包装袋，请先帮我梳理需要确认的信息。")}>咖啡豆包装需求</button>
-								<button onClick={() => void send("我要定制一组办公室储物柜，请先帮我梳理尺寸、数量、安装和交付信息。")}>办公家具需求</button>
-							</div>
+							<h2>开始一个新的包装需求任务</h2>
+							<p>上传资料，描述你要交付什么。Blackx 会整理需求、标出缺失信息，生成可核对与导出的需求单。</p>
+							{!active ? <button className="secondary-action" onClick={() => void createConversation()} disabled={deleting}>开始新会话</button> : <div className="prompt-grid">
+								<button onClick={() => setDraft("我想做一款500克咖啡豆包装袋，请先帮我梳理需要确认的信息。")}>咖啡豆包装需求</button>
+								<button onClick={() => setDraft("我想定制一批护肤品包装纸盒，请先帮我梳理盒型、尺寸、数量和交付信息。")}>护肤品纸盒需求</button>
+							</div>}
 						</div>
 					)}
 				</section>
 
 				<div className="composer-wrap">
+					{active && <ConversationFiles key={active.conversationId} conversationId={active.conversationId} />}
 					{!realProvider && !loading && (
 						<div className="provider-warning">
-							请停止当前服务，并使用 <code>BLACKX_RUNTIME_MODE=anthropic npm run dev</code> 启动实际模型。
+							模型服务尚未配置。配置本地模型连接后即可开始；已保存的会话和需求单仍可查看。
 						</div>
 					)}
-					{error && <div className="error-banner" role="alert">{error}</div>}
+					{error && <div className="error-banner" role="alert">{error}<button aria-label="关闭错误提示" onClick={() => setError(undefined)}>×</button></div>}
+					{!replyRunning && !hasActiveBackgroundTask && active?.messages.at(-1)?.role === "user" && <button className="retry-action" disabled={!realProvider} onClick={() => void retryReply()}>继续上次未完成的回复</button>}
 					{hasActiveBackgroundTask && (
 						<div className="task-banner" role="status">
 							后台任务：{activeBackgroundTasks.some((task) => task.status === "leased") ? "模型处理中" : "排队或等待重试"}
@@ -706,7 +837,7 @@ function App() {
 									<strong>{attachment.name}</strong>
 									<small>{attachment.modelInput === "image"
 										? selectedAttachmentIds.includes(attachment.attachmentId) ? "将随下一条消息发送" : "点击附到下一条消息"
-										: attachment.modelInput === "text_extracted" ? "文本将进入需求来源" : "已保存，当前仅传递元数据"}</small>
+										: parsedSources.some((source) => source.sha256 === attachment.sha256) ? inspectionStatusLabels[parsedSources.find((source) => source.sha256 === attachment.sha256)!.inspection.status] : "已上传 · 生成需求单时解析"}</small>
 								</button>
 							))}
 						</div>
@@ -716,7 +847,7 @@ function App() {
 							value={draft}
 							onChange={(event) => setDraft(event.target.value)}
 							onKeyDown={(event) => {
-								if (event.key === "Enter" && !event.shiftKey) {
+								if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
 									event.preventDefault();
 									void send(draft);
 								}
@@ -725,7 +856,7 @@ function App() {
 							placeholder={hasActiveBackgroundTask
 								? "当前会话的后台任务完成后可继续发送"
 								: realProvider ? "发送消息给 Blackx…" : "请先连接实际模型 API"}
-							disabled={!active || !realProvider || sending || hasActiveBackgroundTask}
+							disabled={!active || !realProvider || replyRunning || hasActiveBackgroundTask}
 							aria-label="对话输入"
 						/>
 						<div className="composer-tools">
@@ -740,6 +871,7 @@ function App() {
 								{uploading ? "上传中…" : "＋ 图片 / 文件"}
 							</label>
 							<span>Enter 发送 · Shift + Enter 换行</span>
+							{replyRunning && <button type="button" className="stop-button" onClick={() => void stopReply()}>停止</button>}
 							<button
 								type="submit"
 								className="send-button"
@@ -749,26 +881,30 @@ function App() {
 							</button>
 						</div>
 					</form>
-					<small className="disclaimer">建议保持待确认；权威事实和审批由确定性服务端状态管理。</small>
+					<small className="disclaimer">AI 提取的信息需你确认。需求单保留资料来源与版本记录。</small>
 				</div>
 			</main>
 
-			<aside className="proposal-panel" aria-label="Requirement Brief 业务状态">
+			<aside className="proposal-panel" aria-label="多功能工作区">
 				<header className="proposal-header">
+					<button className="panel-toggle" aria-label="关闭工作区" onClick={() => setReviewOpen(false)}>×</button>
 					<div>
-						<span className="eyebrow">ARTIFACT-FIRST WORKFLOW</span>
-						<h2>Requirement Brief</h2>
+						<span className="eyebrow">WORKSPACE</span>
+						<h2>{{ requirement: "需求单工作区", models: "模型监控", files: "文件浏览" }[panelTab]}</h2>
 					</div>
-					{requirement && (
+					{panelTab === "requirement" && requirement && (
 						<span className={`proposal-status ${requirement.state.stageStatus}`}>
 							{stageLabels[requirement.state.stageStatus]}
 						</span>
 					)}
 				</header>
 
-				<div className="proposal-body">
+				<div className="workspace-tabs" role="tablist" aria-label="工作区功能">
+					{(["requirement", "models", "files"] as const).map((tab, index, tabs) => <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={panelTab === tab} tabIndex={panelTab === tab ? 0 : -1} onClick={() => setPanelTab(tab)} onKeyDown={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3; setPanelTab(tabs[next]); (event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next])?.focus(); } }}>{ { requirement: "需求单", models: "模型调用", files: "文件" }[tab]}</button>)}
+				</div>
+				<div className="proposal-body" role="tabpanel" id="panel-requirement" aria-labelledby="tab-requirement" hidden={panelTab !== "requirement"}>
 					{requirementMetrics && requirementMetrics.totals.runs > 0 && (
-						<section className="proposal-section">
+						<details className="proposal-section diagnostics"><summary>运行统计</summary>
 							<div className="section-title"><strong>Cross-run Metrics</strong><code>{requirementMetrics.totals.runs} Runs</code></div>
 							<dl className="run-metadata">
 								<div><dt>工作流完成</dt><dd>{requirementMetrics.rates.workflowCompletion === null ? "—" : `${Math.round(requirementMetrics.rates.workflowCompletion * 100)}%`}</dd></div>
@@ -790,16 +926,17 @@ function App() {
 									<span key={point.runId}>{displayTime(point.startedAt)} · {point.industry ?? "unknown"} · {stageLabels[point.stageStatus]} · Artifact v{point.metrics.artifactVersions}</span>
 								))}
 							</div>
-						</section>
+						</details>
 					)}
-					{!requirement ? (
+					{requirement?.readOnlyReason ? (
+						<section className="proposal-empty"><strong>历史需求（只读）</strong><p>{requirement.readOnlyReason}</p>
+							<p>历史状态：{stageLabels[requirement.state.stageStatus]} · {requirement.state.proposalVersions.length} 个交付版本</p>
+							{!requirementTerminal && <button className="secondary-action" disabled={requirementBusy} onClick={() => void cancelRequirement()}>取消历史任务</button>}
+						</section>
+					) : !requirement ? (
 						<section className="proposal-empty">
-							<strong>还没有 Requirement Run</strong>
-							<p>将当前会话固化为有来源、可确认、可评测和可审批的需求单版本。</p>
-							<div className="industry-picker" role="group" aria-label="制造行业">
-								<button className={industry === "print" ? "selected" : ""} onClick={() => setIndustry("print")}>印刷 / 包装</button>
-								<button className={industry === "furniture" ? "selected" : ""} onClick={() => setIndustry("furniture")}>定制家具</button>
-							</div>
+							<strong>把资料整理成可交付的需求单</strong>
+							<p>围绕包装类型、尺寸、数量、市场、交期和稿件，逐项核对资料，再确认当前版本。</p>
 							<button
 								className="primary-action"
 								onClick={() => void startRequirement()}
@@ -807,28 +944,28 @@ function App() {
 							>
 								{requirementBusy ? "正在创建…" : "生成需求单"}
 							</button>
-							{!hasUserMessage && <small>先发送一条明确的印刷或家具需求。</small>}
+							{!hasUserMessage && <small>先描述一条明确的包装需求。</small>}
 						</section>
 					) : (
 						<>
 							<section className="workflow-track" aria-label="Requirement Brief 工作流进度">
-								<span className="done">Intake</span>
-								<span className={requirement.state.currentProposal ? "done" : "active"}>Artifact</span>
-								<span className={requirement.state.evaluation ? "done" : requirement.state.stageStatus === "evaluating" ? "active" : ""}>Evaluation</span>
-								<span className={requirement.state.stageStatus === "passed" ? "done" : requirement.state.stageStatus === "waiting_approval" ? "active" : ""}>Approval</span>
+								<span className="done">收集需求</span>
+								<span className={requirement.state.currentProposal ? "done" : "active"}>整理资料</span>
+								<span className={requirement.state.evaluation ? "done" : requirement.state.stageStatus === "evaluating" ? "active" : ""}>校验</span>
+								<span className={requirement.state.stageStatus === "passed" ? "done" : requirement.state.stageStatus === "waiting_approval" ? "active" : ""}>确认交付</span>
 							</section>
 
 							<section className="proposal-section">
-								<div className="section-title"><strong>Run</strong><code>v{requirement.state.aggregateVersion}</code></div>
+								<div className="section-title"><strong>任务概览</strong><code>v{requirement.state.aggregateVersion}</code></div>
 								<dl className="run-metadata">
-									<div><dt>行业</dt><dd>{requirement.state.facts.industry?.value === "furniture" ? "家具" : "印刷"}</dd></div>
+									<div><dt>行业</dt><dd>包装</dd></div>
 									<div><dt>状态</dt><dd>{stageLabels[requirement.state.stageStatus]}</dd></div>
 									<div><dt>版本</dt><dd>{requirement.state.currentProposal?.version ?? "—"}</dd></div>
-									<div><dt>队列</dt><dd>{requirement.job?.status ?? "—"}</dd></div>
+									<div><dt>队列</dt><dd>{requirement.job ? ({ queued: "排队中", leased: "执行中", completed: "已完成", cancelled: "已取消", dead_letter: "执行失败" }[requirement.job.status]) : "—"}</dd></div>
 								</dl>
 							</section>
 
-							<section className="proposal-section">
+							<details className="proposal-section diagnostics"><summary>本次运行详情</summary>
 								<div className="section-title"><strong>Product Metrics</strong><code>{requirement.metrics.schemaVersion}</code></div>
 								<dl className="run-metadata">
 									<div><dt>Canonical 命中</dt><dd>{requirement.metrics.canonicalFactHitRate === null ? "—" : `${Math.round(requirement.metrics.canonicalFactHitRate * 100)}%`}</dd></div>
@@ -844,16 +981,16 @@ function App() {
 									<div><dt>恢复 / 失败</dt><dd>{requirement.metrics.queue.recoveryCount} / {requirement.metrics.queue.totalFailureCount}</dd></div>
 									<div><dt>Tool 失败率</dt><dd>{requirement.metrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirement.metrics.runtime.toolFailureRate * 100)}%`}</dd></div>
 								</dl>
-							</section>
+							</details>
 
 							<section className="proposal-section facts-card">
-								<div className="section-title"><strong>Field Facts</strong><span>{facts.length}</span></div>
+								<div className="section-title"><strong>核对关键信息</strong><span>{facts.length}</span></div>
 								{facts.map((fact) => (
 									<div className="fact-row" key={`${fact.key}-${fact.version}`}>
 										<div>
-											<code>{fact.key}@v{fact.version}</code>
+											<small>{requirementFieldLabels[fact.key] ?? fact.key} · v{fact.version}</small>
 											<strong>{String(fact.value)}{fact.unit ? ` ${fact.unit}` : ""}</strong>
-											<small>{fact.sourceType} · {fact.status}</small>
+											<small>{factStatusLabels[fact.status]} · {fact.sourceType === "model_output" ? "AI 提取" : fact.sourceType === "human_confirmation" ? "人工确认" : "人工输入"}</small>
 										</div>
 										{(fact.status === "suggested" || fact.status === "unverified") && (
 											<div className="fact-actions">
@@ -864,27 +1001,15 @@ function App() {
 									</div>
 								))}
 								<form className="fact-form" onSubmit={(event) => void recordFact(event)}>
-									<input value={factKey} onChange={(event) => setFactKey(event.target.value)} placeholder="字段，例如 quantity" aria-label="Fact 字段" disabled={requirementTerminal} />
-									<input value={factValue} onChange={(event) => setFactValue(event.target.value)} placeholder="值" aria-label="Fact 值" disabled={requirementTerminal} />
-									<input value={factUnit} onChange={(event) => setFactUnit(event.target.value)} placeholder="单位（可选）" aria-label="Fact 单位" disabled={requirementTerminal} />
-									<button type="submit" disabled={requirementBusy || requirementRunning || requirementTerminal || !factKey.trim() || !factValue.trim()}>记录候选</button>
+									<select value={factKey} onChange={(event) => { setFactKey(event.target.value); setFactValue(""); }} aria-label="需求字段" disabled={requirementTerminal}><option value="">选择要补充的字段</option>{fieldOptions.map((key) => <option key={key} value={key}>{requirementFieldLabels[key]}</option>)}</select>
+									<input value={factValue} type={factKey === "quantity" ? "number" : factKey === "target_delivery" ? "date" : "text"} min={factKey === "quantity" ? 1 : undefined} step={1} required onChange={(event) => setFactValue(event.target.value)} placeholder={factKey === "dimensions" ? "例如：宽 160 × 高 230 + 底 80 mm" : "填写内容"} aria-label="字段内容" disabled={requirementTerminal} />
+									<input value={factUnit} onChange={(event) => setFactUnit(event.target.value)} placeholder="单位（可选）" aria-label="字段单位" disabled={requirementTerminal} />
+									<button type="submit" disabled={requirementBusy || requirementRunning || requirementTerminal || !factKey.trim() || !factValue.trim()}>添加待确认信息</button>
 								</form>
-								<small>模型或用户输入只能形成候选；确认后才成为 verified。</small>
+								<small>新增信息需逐项确认。修改后旧需求单会失效，请重新生成。</small>
 							</section>
 
-							{content && (
-								<section className="proposal-section artifact-card">
-									<div className="section-title"><strong>{content.title}</strong><code>Artifact v{requirement.state.currentProposal?.version}</code></div>
-									<p>{content.customerGoal}</p>
-									<div className="verification-list">
-										<strong>缺失的必填字段</strong>
-										{content.missingRequiredFacts.length
-											? content.missingRequiredFacts.map((item) => <span key={item}>· {item}</span>)
-											: <span>无</span>}
-									</div>
-									<small>下一步：{content.nextAction}</small>
-								</section>
-							)}
+							{content && active && requirement.state.currentProposal && <DeliveryPreview conversationId={active.conversationId} versions={requirement.state.proposalVersions.map((item) => item.version)} currentVersion={requirement.state.currentProposal.version} revision={requirement.state.aggregateVersion} onSources={setParsedSources} />}
 
 							{requirement.state.currentProposal && !content && (
 								<section className="proposal-section invalid-artifact">
@@ -895,16 +1020,16 @@ function App() {
 
 							{evaluation && (
 								<section className={`proposal-section evaluation ${evaluation.passed ? "passed" : "failed"}`}>
-									<div className="section-title"><strong>Deterministic Evaluation</strong><span>{evaluation.passed ? "PASSED" : "FAILED"}</span></div>
+									<div className="section-title"><strong>需求校验</strong><span>{evaluation.passed ? "通过" : "未通过"}</span></div>
 									{evaluation.issues.length === 0
-										? <p>结构和权威状态检查通过。{evaluation.approvalEligible ? "可以审批。" : "仍需补充或确认 Fact。"}</p>
+										? <p>结构和权威状态检查通过。{evaluation.approvalEligible ? "可以审批。" : "仍需补充或确认 信息。"}</p>
 										: evaluation.issues.map((issue) => <p key={issue.code}>{issue.message}</p>)}
 								</section>
 							)}
 
 							{requirement.state.approval?.status === "requested" && (
 								<section className="proposal-section approval-card">
-									<strong>Requirement Approval · Artifact v{requirement.state.approval.artifactVersion}</strong>
+									<strong>确认需求单 · v{requirement.state.approval.artifactVersion}</strong>
 									<p>审批只绑定当前版本；后续需求变化会使该审批失效。</p>
 									<div className="approval-actions">
 										<button onClick={() => void resolveRequirementApproval("rejected")} disabled={requirementBusy}>拒绝</button>
@@ -914,7 +1039,7 @@ function App() {
 							)}
 
 							{requirement.state.approval && requirement.state.approval.status !== "requested" && (
-								<div className={`approval-result ${requirement.state.approval.status}`}>Requirement Approval：{requirement.state.approval.status}</div>
+								<div className={`approval-result ${requirement.state.approval.status}`}>需求单确认：{requirement.state.approval.status}</div>
 							)}
 							{requirement.job?.status === "dead_letter" && (
 								<div className="proposal-failure">{requirement.job.lastFailure?.message ?? "Requirement Worker 已进入死信队列"}</div>
@@ -923,6 +1048,7 @@ function App() {
 							{requirement.state.stageStatus !== "passed" && requirement.state.stageStatus !== "cancelled" && (
 								<button className="secondary-action" onClick={() => void cancelRequirement()} disabled={requirementBusy}>取消任务</button>
 							)}
+							{requirement.state.stageStatus === "passed" && <p className="cancelled-note">当前版本已批准。如有新需求，请新建任务，保留本次交付记录。</p>}
 							{requirement.state.stageStatus === "cancelled" && (
 								<div className="cancelled-note">已保留需求、Fact、Artifact 与审计事件；重新审查会从现有版本继续，不会删除历史。</div>
 							)}
@@ -932,15 +1058,19 @@ function App() {
 								disabled={!hasUserMessage || !realProvider || requirementBusy || sending || requirementRunning || requirement.state.stageStatus === "waiting_approval" || requirement.state.stageStatus === "passed"}
 							>
 								{requirementRunning
-									? "后台正在执行…"
+									? progressLabel(requirementActivity)
 									: requirement.state.stageStatus === "cancelled"
 										? "重新审查需求单"
-										: "用最新 Fact 生成新版本"}
+										: "用最新信息生成新版本"}
 							</button>
 						</>
 					)}
 				</div>
+				<div className="proposal-body" role="tabpanel" id="panel-models" aria-labelledby="tab-models" hidden={panelTab !== "models"}>{active && reviewOpen && panelTab === "models" ? <ModelMonitor key={active.conversationId} conversationId={active.conversationId} /> : !active && <p>新建或选择会话后查看模型调用。</p>}</div>
+				<div className="proposal-body" role="tabpanel" id="panel-files" aria-labelledby="tab-files" hidden={panelTab !== "files"}>{active ? <FileExplorer key={active.conversationId} conversationId={active.conversationId} onUseFile={(path) => { setDraft(`请读取并协助处理这个文件：${path}\n处理要求：`); if (window.innerWidth < 1180) setReviewOpen(false); }} /> : <p>新建或选择会话后浏览本机文件。</p>}</div>
 			</aside>
+			{pendingDelete && <DeleteConversationDialog title={pendingDelete.title} busy={deleting} error={deleteError}
+				onCancel={() => setPendingDelete(undefined)} onConfirm={() => void deleteConversation()} />}
 		</div>
 	);
 }

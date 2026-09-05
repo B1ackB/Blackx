@@ -34,6 +34,90 @@ afterEach(() => {
 });
 
 describe("ConversationApiController", () => {
+	it("deletes an active turn without letting a late provider response restore it", async () => {
+		const sessions = state();
+		let started!: () => void; let release!: () => void;
+		const entered = new Promise<void>((resolve) => { started = resolve; });
+		const late = new Promise<void>((resolve) => { release = resolve; });
+		const runtime = new BlackxAgentRuntime({ sessions, snapshots: sessions, skills: new SkillRegistry(), provider: { async generate() {
+			started(); await late;
+			return { text: "late reply", toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } };
+		} } });
+		const api = new ConversationApiController(runtime, sessions);
+		const id = conversation(api.create(context)).conversationId;
+		const pending = api.send(context, id, { messageId: "delete-race", content: "slow" });
+		await entered;
+		let cleanups = 0;
+		const cleanup = () => { cleanups++; };
+		expect(api.delete({ ...context, workspaceId: "other" }, id, cleanup).status).toBe(404);
+		expect(cleanups).toBe(0);
+		const deleted = api.delete(context, id, cleanup);
+		expect(deleted.status).toBe(200);
+		expect(await pending).toMatchObject({ body: { code: "cancelled" } });
+		expect((await runtime.health()).providerStatus).toBe("configured");
+		release();
+		expect(api.delete(context, id, cleanup)).toEqual(deleted);
+		expect(api.get(context, id).status).toBe(404);
+		expect(api.traces(context, id).status).toBe(404);
+		expect(api.list(context).body).toEqual({ conversations: [] });
+		expect(await api.send(context, id, { messageId: "after-delete", content: "restart" })).toMatchObject({ status: 404 });
+		expect(sessions.listSessions(context, true)[0].messages.some((message) => message.content === "late reply")).toBe(false);
+	});
+
+	it("keeps deletion intent when cleanup fails and retries cleanup with the original audit attribution", () => {
+		const sessions = state();
+		const api = new ConversationApiController(new FakeAgentRuntime(), sessions);
+		const id = conversation(api.create(context)).conversationId;
+		expect(api.delete(context, id, () => { throw new Error("queue unavailable"); })).toMatchObject({ status: 503, body: { code: "conversation_cleanup_pending" } });
+		expect(api.get(context, id).status).toBe(404);
+		let actor: string | undefined;
+		expect(api.delete({ ...context, actorId: "retry-user" }, id, (session) => { actor = session.deletion?.actorId; }).status).toBe(200);
+		expect(actor).toBe(context.actorId);
+	});
+
+	it("resumes a saved tool checkpoint instead of treating tool calls as a final reply", async () => {
+		const sessions = state(); let calls = 0;
+		const runtime = new BlackxAgentRuntime({ provider: { async generate() { calls++; return { text: "工具阶段之后的最终回复", toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } }; } }, skills: new SkillRegistry(), sessions, snapshots: sessions });
+		const controller = new ConversationApiController(runtime, sessions);
+		const id = conversation(controller.create(context)).conversationId;
+		const target = { ...context, runId: id, sessionId: id };
+		sessions.save(target, sessions.getSession(target)!.revision, [
+			{ role: "user", content: "继续任务", messageId: "paused-user", pinned: true },
+			{ role: "assistant", content: "读取资料", toolCalls: [{ id: "paused-tool", name: "source_read", input: {} }] },
+			{ role: "tool", content: "已读取的资料", toolCallId: "paused-tool" },
+		], new Date().toISOString());
+		expect(await controller.retry(context, id)).toMatchObject({ status: 200 });
+		expect(calls).toBe(1);
+		expect(conversation(controller.get(context, id)).messages.at(-1)?.content).toBe("工具阶段之后的最终回复");
+	});
+
+	it("keeps the active turn owned during conflicting requests, cancels it, and retries one saved message", async () => {
+		const sessions = state();
+		let started!: () => void; let release!: () => void; let count = 0;
+		const entered = new Promise<void>((resolve) => { started = resolve; });
+		const late = new Promise<void>((resolve) => { release = resolve; });
+		const provider: AgentModelProvider = { async generate() {
+			count += 1;
+			if (count === 1) { started(); await late; }
+			return { text: "已完成", toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } };
+		} };
+		const runtime = new BlackxAgentRuntime({ provider, skills: new SkillRegistry(), sessions, snapshots: sessions, traces: sessions });
+		const controller = new ConversationApiController(runtime, sessions);
+		const id = conversation(controller.create(context)).conversationId;
+		const pending = controller.send(context, id, { messageId: "first", content: "继续任务" });
+		await entered;
+		for (const messageId of ["conflict-1", "conflict-2"]) expect(await controller.send(context, id, { messageId, content: "重复请求" })).toMatchObject({ status: 409, body: { code: "turn_in_progress" } });
+		expect(controller.cancel({ ...context, tenantId: "other" }, id).status).toBe(404);
+		expect(controller.cancel(context, id)).toMatchObject({ status: 200, body: { stopped: true } });
+		expect(await pending).toMatchObject({ body: { code: "cancelled" } });
+		release();
+		expect(conversation(controller.get(context, id)).messages).toHaveLength(1);
+		expect(await controller.retry(context, id)).toMatchObject({ status: 200 });
+		expect(conversation(controller.get(context, id)).messages.map((message) => message.content)).toEqual(["继续任务", "已完成"]);
+		expect(await controller.retry(context, id)).toMatchObject({ status: 200, body: { duplicate: true } });
+		expect(count).toBe(2);
+	});
+
 	it("creates, lists, and selects server-persisted conversations within a tenant", () => {
 		const sessions = state();
 		const controller = new ConversationApiController(

@@ -142,6 +142,12 @@ Print/Furniture 真实目标用户没有参与，因此用户可用性、返工�
 
 M3 采用 Claude Code/Codex 风格的本地运行模式：Agent Loop、Context、Skill、Provider、Workflow 和权威状态留在用户设备的受信 Host；外部 Tool/Command 子进程通过原生 OS Sandbox 执行。macOS 首先使用 Seatbelt，不要求 Docker 或额外机器；托管云 Runner、gVisor、Kubernetes、MicroVM 和生产分布式存储不属于 M3。完整决定见 [`ADR-0008`](adr/0008-local-native-tool-sandbox.md)。
 
+## D12：当前产品仅聚焦包装
+
+状态：Accepted · 确认日期：2026-09-05
+
+产品负责人要求缩紧范围，仅针对包装行业，不再提供家具入口或业务执行。此决定替代 D9 的跨行业产品范围；D10 的旧跨行业合成与真实模型记录保留为历史证据。当前需求 Schema、API、UI 和固定 Eval 均聚焦包装，已有非包装需求只读保留且不能转换为包装 Run。详见 [ADR-0010](adr/0010-packaging-product-focus.md)。
+
 ## 尚未确认
 
 - Node.js、包管理器与 Monorepo 工具的固定版本

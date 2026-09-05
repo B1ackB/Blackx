@@ -4,9 +4,14 @@ import { sealingBagEvalFixture } from "./sealingBagFixture";
 import { scoreSealingBagTurn } from "./score";
 
 async function runRemote(baseUrl: string): Promise<RuntimeTurnResult> {
+	const origin = new URL(baseUrl);
+	if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || origin.username || origin.password) throw new Error("Local HTTP Eval requires the Host's http://127.0.0.1:<port> address");
+	const bootstrap = await fetch(`${origin.origin}/api/local-session`, { headers: { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" } });
+	if (!bootstrap.ok) throw new Error("Cannot establish a local Eval session");
+	const { token } = await bootstrap.json() as { token: string };
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/runtime/turn`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-blackx-session-token": token },
     body: JSON.stringify(sealingBagEvalFixture.request),
   });
   if (!response.ok) {

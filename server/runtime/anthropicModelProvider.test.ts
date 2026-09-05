@@ -63,6 +63,7 @@ describe("AnthropicModelProvider", () => {
 			text: "working",
 			toolCalls: [{ id: "call-1", name: "lookup", input: { id: 1 } }],
 			usage: { inputTokens: 12, cachedInputTokens: 3, outputTokens: 4 },
+			telemetry: { model: "model-a", stopReason: "tool_use", cacheReadTokens: 3, cacheWriteTokens: null },
 		});
 	});
 

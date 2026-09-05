@@ -1,3 +1,7 @@
+import { deliveryHtml, deliveryMarkdown, type RequirementDelivery } from "../src/manufacturing/requirementDelivery";
+import { AssetInspectionService } from "./runtime/assetInspection";
+import { MacOsSeatbeltSandboxedToolExecutor } from "./runtime/macOsSeatbeltSandboxedToolExecutor";
+import { LocalAccess } from "./localAccess";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { createServer as createViteServer } from "vite";
@@ -18,6 +22,8 @@ import {
 	createAutomationTools,
 } from "./runtime/automationTools";
 import { ConversationApiController } from "./runtime/conversationApi";
+import { ConversationDeletion } from "./runtime/conversationDeletion";
+import { ConversationFileService, conversationFileToolNames, TaskFileError } from "./runtime/conversationFiles";
 import {
 	ConversationAttachmentError,
 	FileConversationAttachmentStore,
@@ -38,6 +44,7 @@ import { RequirementBriefWorker } from "./manufacturing/requirementBriefWorker";
 import { RequirementBriefWorkspaceApiController } from "./manufacturing/requirementBriefApi";
 
 const port = Number(process.env.BLACKX_PORT ?? 5173);
+const localAccess = new LocalAccess(port);
 const eventStore = new FileEnterpriseEventStore(
 	resolve(
 			process.env.BLACKX_EVENT_STORE_PATH ??
@@ -69,13 +76,29 @@ const cronScheduleStore = new FileCronScheduleStore(
 const conversationAttachments = new FileConversationAttachmentStore(
 	resolve(process.env.BLACKX_ATTACHMENT_STORE_PATH ?? ".blackx-data/attachments"),
 );
+const workspaceRoot = resolve(process.env.BLACKX_WORKSPACE_ROOT ?? ".");
+const conversationFiles = new ConversationFileService(resolve(process.env.BLACKX_FILE_STORE_PATH ?? ".blackx-data/files"), (scope) => {
+	if (scope.tenantId !== localAccess.identity.tenantId || scope.workspaceId !== localAccess.identity.workspaceId || scope.actorId !== localAccess.identity.actorId) throw new TaskFileError("file_scope_denied", "本机文件仅供当前 Host 用户访问", 403);
+	if (!agentState.getSession({ ...scope, sessionId: scope.runId })) throw new TaskFileError("conversation_not_found", "会话已删除或不存在", 404);
+}, undefined, [resolve(".blackx-data"), ...[process.env.BLACKX_AGENT_STATE_PATH, process.env.BLACKX_EVENT_STORE_PATH, process.env.BLACKX_ARTIFACT_STORE_PATH, process.env.BLACKX_ATTACHMENT_STORE_PATH, process.env.BLACKX_STAGE_JOB_QUEUE_PATH, process.env.BLACKX_CRON_SCHEDULE_PATH, process.env.BLACKX_INSPECTION_CACHE_PATH].filter((path): path is string => !!path).map((path) => resolve(path))], workspaceRoot);
+const assetInspection = new AssetInspectionService(requirementBriefEngine, conversationAttachments, new MacOsSeatbeltSandboxedToolExecutor({ workspaceRoot }), workspaceRoot, undefined, process.env.BLACKX_INSPECTION_CACHE_PATH);
 const services = createRuntime(process.env, {
+	sandboxedToolExecutor: assetInspection,
 	tools: [
-		...createAutomationTools(stageJobQueue, cronScheduleStore),
+		...conversationFiles.tools(),
+		...createAutomationTools(stageJobQueue, cronScheduleStore).map((tool) => tool.execution !== "host" ? tool : ({
+			...tool,
+			execute: (input: Parameters<typeof tool.execute>[0], context: Parameters<typeof tool.execute>[1]) => {
+				if (!agentState.getSession({ ...context, sessionId: context.runId })) throw new RuntimeFailure("cancelled", "会话已删除或不存在", false);
+				return tool.execute(input, context);
+			},
+		})),
 		researchSourceTool,
+		assetInspection.tool(),
 		createProjectSourceReadTool(requirementBriefEngine, conversationAttachments),
 	],
 	autonomouslyApprovedTools: automationWriteToolNames,
+	approval: conversationFiles,
 	resolveImageAttachment: async (scope, attachment) => conversationAttachments.resolveImage(scope, attachment),
 });
 const { runtime, state: agentState } = services;
@@ -84,7 +107,7 @@ const conversationApi = new ConversationApiController(
 	agentState,
 	undefined,
 	undefined,
-	automationToolNames,
+	[...automationToolNames, ...conversationFileToolNames],
 	conversationAttachments,
 );
 const stageJobOutbox = new StageJobOutbox(proposalEngine, eventStore, stageJobQueue);
@@ -107,6 +130,7 @@ const requirementBriefWorker = new RequirementBriefWorker(
 	runtime,
 	artifactStore,
 	conversationAttachments,
+	assetInspection,
 );
 const stageJobScheduler = new StageJobScheduler(
 	stageJobQueue,
@@ -115,14 +139,16 @@ const stageJobScheduler = new StageJobScheduler(
 		leaseMs: Number(process.env.BLACKX_WORKER_LEASE_MS ?? 135_000),
 		pollIntervalMs: Number(process.env.BLACKX_WORKER_POLL_MS ?? 250),
 		handlers: {
-			proposal: (lease, signal) => proposalWorker.executeLease(lease, signal),
-			"requirement-brief": (lease, signal) => requirementBriefWorker.executeLease(lease, signal),
-			"conversation-background": (lease) => backgroundConversationWorker.execute(lease),
+			proposal: (lease, signal, assertActive) => proposalWorker.executeLease(lease, signal, assertActive),
+			"requirement-brief": (lease, signal, assertActive) => requirementBriefWorker.executeLease(lease, signal, assertActive),
+			"conversation-background": (lease, signal, assertActive) => backgroundConversationWorker.execute(lease, signal, assertActive),
 		},
 		dispatchOutbox: () => {
+			conversationDeletion.reconcile(localAccess.identity);
 			stageJobOutbox.dispatchOne();
 			requirementBriefOutbox.dispatchOne();
 			cronDispatcher.dispatchDue();
+			conversationDeletion.reconcile(localAccess.identity);
 		},
 		onError: (error) => {
 			const code = error instanceof Error ? error.name : "unknown_error";
@@ -130,6 +156,10 @@ const stageJobScheduler = new StageJobScheduler(
 		},
 	},
 );
+const conversationDeletion = new ConversationDeletion(agentState, stageJobScheduler, cronScheduleStore, [
+	{ prefix: "proposal", engine: proposalEngine },
+	{ prefix: "requirement", engine: requirementBriefEngine },
+]);
 const backgroundTaskApi = new BackgroundTaskApiController(stageJobQueue, conversationApi, runtime);
 const cronApi = new CronApiController(cronScheduleStore);
 const proposalWorkspaceApi = new ProposalWorkspaceApiController(
@@ -154,8 +184,9 @@ const proposalWorkerApi = new ProposalWorkerApiController(
 	process.env.BLACKX_OPERATOR_API_TOKEN,
 );
 let stopStageJobScheduler = () => {};
+const server = createServer();
 const vite = await createViteServer({
-	server: { middlewareMode: true, hmr: { port: port + 20_000 } },
+	server: { middlewareMode: true, hmr: { server } },
 	appType: "spa",
 });
 
@@ -277,11 +308,29 @@ function conversationApiContext(request: IncomingMessage) {
 	};
 }
 
-const server = createServer(async (request, response) => {
+server.on("request", async (request, response) => {
+	response.setHeader("x-frame-options", "DENY");
+	response.setHeader("content-security-policy", "frame-ancestors 'none'");
+	response.setHeader("referrer-policy", "no-referrer");
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (process.env.BLACKX_RUNTIME_DEBUG === "1" && url.pathname.startsWith("/v1/")) {
     console.error(`[runtime-debug] inbound method=${request.method ?? "unknown"} path=${url.pathname}`);
   }
+
+	if (url.pathname === "/api/local-session" && request.method === "GET") {
+		if (!localAccess.canBootstrap(request.headers)) { json(response, 403, { code: "local_access_denied" }); return; }
+		response.setHeader("cache-control", "no-store");
+		json(response, 200, { token: localAccess.token, identity: localAccess.identity });
+		return;
+	}
+	if (url.pathname.startsWith("/api/")) {
+		response.setHeader("cache-control", "no-store");
+		response.setHeader("x-content-type-options", "nosniff");
+		if (!localAccess.authorize(request.headers)) { json(response, 403, { code: "local_access_denied", message: "本地会话已失效，请刷新页面。" }); return; }
+		request.headers["x-blackx-tenant-id"] = localAccess.identity.tenantId;
+		request.headers["x-blackx-workspace-id"] = localAccess.identity.workspaceId;
+		request.headers["x-blackx-actor-id"] = localAccess.identity.actorId;
+	}
 
   if (request.method === "GET" && url.pathname === "/api/runtime/health") {
     json(response, 200, await runtime.health());
@@ -289,6 +338,7 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && url.pathname === "/api/runtime/turn") {
+		if (process.env.BLACKX_ENABLE_RUNTIME_EVAL !== "1") { json(response, 403, { code: "runtime_eval_disabled" }); return; }
     try {
       const payload = await readJson(request);
       if (!isTurnRequest(payload)) {
@@ -304,7 +354,7 @@ const server = createServer(async (request, response) => {
       const timeoutMs = Math.min(Math.max(payload.policy.timeoutMs, 1_000), 120_000);
       const timeout = setTimeout(() => controller.abort("runtime_timeout"), timeoutMs);
       try {
-        const result = await runtime.executeTurn(payload, controller.signal);
+        const result = await runtime.executeTurn({ ...payload, ...localAccess.identity, allowedTools: [], policy: { ...payload.policy, timeoutMs, sandboxMode: "read-only", approvalPolicy: "required" } }, controller.signal);
         json(response, 200, result);
       } finally {
         clearTimeout(timeout);
@@ -347,6 +397,35 @@ const server = createServer(async (request, response) => {
 	if (request.method === "GET" && url.pathname === "/api/requirement-brief/metrics") {
 		const result = requirementBriefWorkspaceApi.metricsSeries(conversationApiContext(request));
 		json(response, result.status, result.body);
+		return;
+	}
+
+	const filesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/files(?:\/(content|local-content|directories|directories\/([^/]+)|approvals\/([^/]+)))?$/);
+	if (filesMatch) {
+		try {
+			const runId = decodeURIComponent(filesMatch[1]);
+			const context = conversationApiContext(request);
+			const accessible = conversationApi.get(context, runId);
+			if (accessible.status !== 200) { json(response, accessible.status, accessible.body); return; }
+			const scope = { tenantId: context.tenantId!, workspaceId: context.workspaceId!, actorId: context.actorId!, runId };
+			if (request.method === "GET" && !filesMatch[2]) json(response, 200, conversationFiles.list(scope));
+			else if (request.method === "GET" && filesMatch[2] === "content") {
+				json(response, 200, conversationFiles.read(scope, url.searchParams.get("path") ?? "", url.searchParams.has("version") ? Number(url.searchParams.get("version")) : undefined));
+			} else if (request.method === "GET" && filesMatch[2] === "local-content") {
+				json(response, 200, conversationFiles.readLocal(scope, url.searchParams.get("path") ?? ""));
+			} else if (request.method === "GET" && filesMatch[2] === "directories") {
+				json(response, 200, conversationFiles.browse(scope, url.searchParams.get("path") ?? undefined));
+			} else if ((request.method === "POST" && filesMatch[2] === "directories") || (request.method === "DELETE" && filesMatch[3])) {
+				json(response, 410, { code: "directory_grants_retired", message: "无需提前授权目录，请直接让 Agent 操作文件，每次写入或删除会发起审批。" });
+			} else if (request.method === "POST" && filesMatch[4]) {
+				const payload = await readJson(request) as { decision?: unknown };
+				if (!payload || !["approved", "rejected"].includes(String(payload.decision))) throw new TaskFileError("file_input_invalid", "审批决定无效", 400);
+				conversationFiles.decide(scope, decodeURIComponent(filesMatch[4]), payload.decision as "approved" | "rejected");
+				json(response, 200, conversationFiles.list(scope));
+			} else json(response, 405, { code: "method_not_allowed", message: "不支持此文件操作" });
+		} catch (error) {
+			json(response, error instanceof TaskFileError ? error.status : 500, { code: error instanceof TaskFileError ? error.code : "file_store_unavailable", message: error instanceof TaskFileError ? error.message : "无法访问会话文件区" });
+		}
 		return;
 	}
 
@@ -420,11 +499,14 @@ const server = createServer(async (request, response) => {
 				json(response, 200, { attachments: conversationAttachments.list(attachmentScope) });
 				return;
 			}
+			const content = await readBody(request, 10 * 1024 * 1024);
+			const currentAccess = conversationApi.get(context, conversationId);
+			if (currentAccess.status !== 200) { json(response, currentAccess.status, currentAccess.body); return; }
 			const result = conversationAttachments.put(attachmentScope, {
 				requestId: url.searchParams.get("requestId") ?? "",
 				name: url.searchParams.get("name") ?? "",
 				mediaType: header(request, "content-type") ?? "application/octet-stream",
-				content: await readBody(request, 10 * 1024 * 1024),
+				content,
 			});
 			json(response, result.duplicate ? 200 : 201, result);
 		} catch (error) {
@@ -483,7 +565,8 @@ const server = createServer(async (request, response) => {
 			json(response, 400, { code: "invalid_conversation_id" });
 			return;
 		}
-		const result = cronApi.list(conversationApiContext(request), conversationId);
+		const access = conversationApi.get(conversationApiContext(request), conversationId);
+		const result = access.status === 200 ? cronApi.list(conversationApiContext(request), conversationId) : access;
 		json(response, result.status, result.body);
 		return;
 	}
@@ -499,6 +582,38 @@ const server = createServer(async (request, response) => {
 		}
 		const result = backgroundTaskApi.get(conversationApiContext(request), taskId);
 		json(response, result.status, result.body);
+		return;
+	}
+
+	const modelCallsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/model-calls$/);
+	if (modelCallsMatch && request.method === "GET") {
+		const conversationId = decodeURIComponent(modelCallsMatch[1]);
+		const access = conversationApi.get(conversationApiContext(request), conversationId);
+		if (access.status !== 200) { json(response, access.status, access.body); return; }
+		try {
+			const brief = url.searchParams.get("run") === "requirement" ? requirementBriefWorkspaceApi.get(localAccess.identity, conversationId) : undefined;
+			const runId = brief ? (brief.body as { requirementBrief?: { runId: string } }).requirementBrief?.runId : conversationId;
+			json(response, 200, runId ? services.telemetry.view({ ...localAccess.identity, runId }) : { configuredModel: services.telemetry.configuredModel, calls: [], retentionLimit: services.telemetry.retentionLimit, truncated: false });
+		} catch { json(response, 503, { code: "model_metrics_unavailable", message: "模型统计暂时不可用" }); }
+		return;
+	}
+
+	const conversationControl = url.pathname.match(/^\/api\/conversations\/([^/]+)\/(stop|retry|activity)$/);
+	if (conversationControl) {
+		const context = conversationApiContext(request);
+		const conversationId = conversationControl[1];
+		const access = conversationApi.get(context, conversationId);
+		if (access.status !== 200) { json(response, access.status, access.body); return; }
+		if (request.method === "GET" && conversationControl[2] === "activity") {
+			const brief = url.searchParams.get("run") === "requirement" ? requirementBriefWorkspaceApi.get(localAccess.identity, conversationId) : undefined;
+			const runId = brief ? (brief.body as { requirementBrief?: { runId: string } }).requirementBrief?.runId : conversationId;
+			json(response, 200, { activity: runId ? services.activity.get({ ...localAccess.identity, runId }) : undefined });
+		} else if (request.method === "POST" && conversationControl[2] !== "activity") {
+			const result = conversationControl[2] === "stop"
+				? conversationApi.cancel(context, conversationId)
+				: await conversationApi.retry(context, conversationId);
+			json(response, result.status, result.body);
+		} else json(response, 405, { code: "method_not_allowed" });
 		return;
 	}
 
@@ -532,6 +647,19 @@ const server = createServer(async (request, response) => {
 		}
 		const result = conversationApi.traces(conversationApiContext(request), conversationId);
 		json(response, result.status, result.body);
+		return;
+	}
+
+	const deliveryMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/requirement-brief\/versions\/(\d+)$/);
+	if (deliveryMatch && request.method === "GET") {
+		const result = requirementBriefWorkspaceApi.delivery(conversationApiContext(request), deliveryMatch[1], Number(deliveryMatch[2]));
+		if (result.status !== 200) { json(response, result.status, result.body); return; }
+		const { delivery } = result.body as { delivery: RequirementDelivery };
+		const format = url.searchParams.get("format");
+		if (format === "md" || format === "html") {
+			response.writeHead(200, { "content-type": format === "html" ? "text/html; charset=utf-8" : "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="requirement-v${delivery.version}.${format}"`, "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" });
+			response.end(format === "html" ? deliveryHtml(delivery) : deliveryMarkdown(delivery));
+		} else json(response, 200, { delivery });
 		return;
 	}
 
@@ -732,7 +860,7 @@ const server = createServer(async (request, response) => {
 	}
 
 	const conversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
-	if (request.method === "GET" && conversationMatch) {
+	if ((request.method === "GET" || request.method === "DELETE") && conversationMatch) {
 		let conversationId: string;
 		try {
 			conversationId = decodeURIComponent(conversationMatch[1]);
@@ -740,7 +868,9 @@ const server = createServer(async (request, response) => {
 			json(response, 400, { code: "invalid_conversation_id" });
 			return;
 		}
-		const result = conversationApi.get(conversationApiContext(request), conversationId);
+		const result = request.method === "DELETE"
+			? conversationApi.delete(conversationApiContext(request), conversationId, (session) => conversationDeletion.cleanup(session))
+			: conversationApi.get(conversationApiContext(request), conversationId);
 		json(response, result.status, result.body);
 		return;
 	}

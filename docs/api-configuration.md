@@ -1,7 +1,41 @@
 # API 配置与 Online Eval 指南
 
+当前产品仅支持包装需求。`POST /api/conversations/{conversationId}/requirement-brief` 使用 `{ requestId, industry: "print" }`；其他行业返回 `400 invalid_requirement_brief_request`。`print` 为兼容已有包装数据而保留，界面无需再选行业；新的行业 Fact 来自固定 Domain 配置（`enterprise_source` / `domain:print:packaging`），不伪装为一次人工选择。
+
+历史非包装 Run 仍可读取，工作区响应增加 `readOnlyReason`。创建新版本、修改/确认 Fact 和审批均被拒绝；旧行业版本导出返回 `410 industry_retired`，原始数据保留在本地。旧队列任务以不可重试错误停止，允许用户取消历史任务或删除会话。跨 Run 包装指标排除这些历史 Run。详见 [ADR-0010](adr/0010-packaging-product-focus.md)。
+
 状态：可用于本地配置；DeepSeek Anthropic Contract 已通过
-更新日期：2026-09-03
+更新日期：2026-09-05
+
+## 会话文件 API
+
+全部接口沿用本地会话 Token、Host/Origin 校验与 Host 注入身份；模型不能调用审批决定接口。会话已删除时统一返回 404。
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /api/conversations/:id/files` | 返回文件 Artifact 版本元数据和当前未过期审批，含修改前后文本 |
+| `GET /api/conversations/:id/files/content?path=...&version=1` | 按逻辑路径读取指定版本；省略版本读取当前文件，已删除则 404 |
+| `POST /api/conversations/:id/files/approvals/:approvalId` | 请求体仅决定 `decision=approved/rejected`；Host 使用已保存的操作和内容，版本冲突/过期返回 409 |
+| `POST /api/conversations/:id/files/directories` | 已停用，返回 `410 directory_grants_retired`，旧客户端应刷新 |
+| `DELETE /api/conversations/:id/files/directories/:grantId` | 已停用，返回 `410 directory_grants_retired`，不再创建长期目录授权 |
+| `GET /api/conversations/:id/files/directories?path=...` | 按 Host 策略浏览真实磁盘目录（最多 200 项）；省略 path 返回真实本机位置与历史文件 |
+| `GET /api/conversations/:id/files/local-content?path=...` | 读取真实本地文本文件，返回绝对路径、SHA-256 和内容 |
+
+模型通过 `file_list/read/write/delete` 发起文件操作。`file_list({})` 返回真实 homeDirectory/workingDirectory 等路径，供模型确定具体位置；`file_write/delete` 自动创建单次审批请求，UI 显示路径和内容、用户批准后继续执行。真实文件使用规范绝对路径，无需提前授权目录；写入/删除带 `expectedSha256`，首次新建为 `null`，其他操作必须与原文件哈希一致。**包括新建在内的所有写入、删除都需人工逐次审批**。原相对路径历史接口仍使用 `expectedVersion`。直接调用执行器也必须持有匹配授权记录；目录授权 API 已停用；模型不能调用用户审批接口。普通文本最多128 KiB，不能用文本内容冒充 PDF/Word/图片等二进制格式。
+
+配置 `BLACKX_FILE_STORE_PATH`（默认 `.blackx-data/files`）保存备份和审批索引，与用户本地原文件、附件及已批准需求单分离。审批最多等待两分钟，停止任务会取消等待。本地删除会移除原路径文件，备份保留；恢复需重新审批写入。旧相对路径仍使用逻辑删除。即时审批与存储边界见 [ADR-0013](adr/0013-just-in-time-file-approval.md)。
+
+## 模型调用监控与文件浏览
+
+`GET /api/conversations/:id/model-calls` 返回当前会话模型请求记录，`?run=requirement` 切换为该会话的需求单工作流。沿用本机 Token、Host/Origin 和 Host 注入身份；删除的会话返回 404，身份不匹配拒绝。未创建需求单时返回空记录，读取失败返回 503 `model_metrics_unavailable`。
+
+响应包含 `configuredModel`、`calls`、`retentionLimit=200`、`truncated`。记录包含独立调用 ID、executionId、请求模型、generate/count_tokens 类型、开始时间、耗时、running/succeeded/failed/cancelled/interrupted 状态；有效响应附带上游响应模型、终止原因与数值 Token 字段，失败仅暴露固定类别及可用的 HTTP 状态。每个 Provider 调用尝试单独计数（含重试和 Core 默认摘要），Token Count 单列，不冒充生成次数。统计不代表账单对账；无有效响应的请求不补造 Token 用量。
+
+记录以 `model-calls.v1` 保存在 `BLACKX_AGENT_STATE_PATH/model-calls`，默认 `.blackx-data/agent/model-calls`，每个 tenant/workspace/run 独立索引，原子替换并 fsync。每个运行只保留最近 200 次请求，截断后 UI 明示保留窗口；只覆盖新功能启用后的请求。Host 重启后此前未结束请求显示 interrupted，禁止显示为仍在调用。删除会话后普通 API 不再访问记录，保留审计数据。
+
+缓存命中率采用 Anthropic Messages 用量口径：`sum(cache_read_input_tokens) / sum(input_tokens + cache_read_input_tokens + cache_creation_input_tokens)`。仅纳入缓存读写字段都有效的响应，UI 显示覆盖响应数；字段缺失显示未提供，明确报告零时显示 0%。不启用缓存、不修改 Provider 缓存策略。口径依据：[Anthropic Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
+
+文件页复用已有受控 GET 接口。`files/directories` 无 path 返回 `locations` 和历史文件，工作目录遵循 `BLACKX_WORKSPACE_ROOT`；传 path 按需读取单层目录（最多 200 项）。`files/local-content` 打开真实 UTF-8 文本；`files/content` 读取不可变历史快照。React 以纯文本呈现内容，不执行 HTML/脚本。目录树中的系统目录、隐藏路径、内部状态与链接继续按 Host 策略过滤。浏览操作不需要新增授权入口，写入/删除仍由单次审批控制。
 
 ## 1. 配置原则
 
@@ -74,21 +108,25 @@ Blackx listening on http://127.0.0.1:5173 (blackx-agent)
 
 ## 4. 健康检查
 
-在第二个终端执行：
+打开本机页面后查看侧栏状态：`模型已配置 · 待验证` 只表示配置已加载，`最近请求成功/失败` 表示最近一次实际执行结果。未携带本地会话凭据的请求会被拒绝：
 
 ```bash
-curl http://127.0.0.1:5173/api/runtime/health
+curl http://127.0.0.1:5173/api/runtime/health # 预期 403
 ```
 
 健康接口只证明服务端 Runtime Adapter 已启动，不证明目标模型、结构化输出、Tool 或恢复链路已经验证。
 
-Web UI 使用以下服务端会话接口，并固定携带 Tenant、Workspace 和 Actor Header：
+Web UI 先同源调用 `GET /api/local-session`，再携带进程级 `x-blackx-session-token`。Tenant、Workspace、Actor 由 Host 固定绑定；客户端身份不匹配、跨站来源和嵌入页面均被拒绝。Host 重启后刷新页面。可信本机 CLI 的握手示例见 `eval/productSmoke.ts`；这不是面向多用户的登录系统。
 
 ```text
 GET  /api/conversations
 POST /api/conversations
 GET  /api/conversations/{conversationId}
+DELETE /api/conversations/{conversationId}
 GET  /api/conversations/{conversationId}/traces
+GET  /api/conversations/{conversationId}/activity
+POST /api/conversations/{conversationId}/stop
+POST /api/conversations/{conversationId}/retry
 POST /api/conversations/{conversationId}/messages
 GET  /api/conversations/{conversationId}/attachments
 POST /api/conversations/{conversationId}/attachments?requestId={requestId}&name={fileName}
@@ -97,11 +135,18 @@ POST /api/conversations/{conversationId}/background-tasks
 GET  /api/conversations/{conversationId}/background-tasks
 GET  /api/background-tasks/{taskId}
 GET  /api/conversations/{conversationId}/cron-schedules
+GET  /api/conversations/{conversationId}/requirement-brief/versions/{version}?format=md|html|json
 ```
+
+会话删除不依赖模型配置。`DELETE` 无请求体，会话 ID 是幂等目标；首次及重复删除返回 `200 { conversationId, deletedAt }`，保留首次操作人和时间。不存在或属于其他 Tenant/Workspace 的目标返回 `404`，身份校验仍使用本地会话凭据。删除先在原子 Session 文件中持久化 `deletion`，再停止活动 Turn、取消关联 Background/Proposal/Requirement Job、暂停 Cron，并取消未完成 Workflow（同时失效其审批）。已通过的交付和审批不改写。清理失败返回 `503 conversation_cleanup_pending`，重复 DELETE 可重试；Scheduler 每次派发前后重放删除意图，因此重启和迟到 Outbox 不会恢复该会话的任务。
+
+这是工作台删除，**不是文件物理擦除**：历史消息、附件、Context、Trace、Artifact 和审计事件保留在本地供追溯。删除后的会话不再列出，普通会话及附件、任务状态、需求单和版本导出接口拒绝访问，Session 存储拒绝继续读取或保存执行状态。界面确认框明确说明此保留范围；删除最后一个会话后保持空列表，用户可主动新建。
 
 消息接口只接受 `blackx-agent` Runtime；Fake 模式返回 `real_provider_required`。请求体为 `{ messageId, content, attachmentIds? }`，其中 `attachmentIds` 最多选择 8 个当前会话内、可供模型读取的图片；仅图片消息允许 `content` 为空。服务端会先把用户消息和图片引用写入 Agent Session，再调用模型，因此页面可以立即乐观显示消息，失败或刷新时也不会依赖浏览器 `localStorage`。同一会话只允许一个进行中的 Turn。
 
-附件上传使用原始二进制请求体，单个文件上限 10 MB、每个会话最多 20 个附件和 50 MB，并以 `requestId` 保证幂等。文件内容、元数据和读取接口同时受 Tenant、Workspace 与 Conversation 边界约束，默认持久化到 `.blackx-data/attachments`。纯文本、Markdown、CSV 和 JSON 会作为带 `sourceRef` 的非权威来源进入下一次 Requirement Brief；不超过 5 MB 的 PNG、JPEG、WebP 和 GIF 可映射为 Anthropic-compatible 原生图片内容块。Runtime 在每次模型调用前按租户引用读取并校验 SHA-256，Base64 不持久化到 Agent Session、ContextSnapshot 或 Trace。PDF、其他文件和超过 5 MB 的图片当前仍仅保存与展示元数据，不进入文档解析器。
+附件上传使用原始二进制请求体，单个文件上限 10 MB、每个会话最多 20 个附件和 50 MB，并以 `requestId` 保证幂等。文件内容、元数据和读取接口受 Tenant、Workspace、Conversation 与 SHA-256 校验约束。不超过 5 MB 的 PNG、JPEG、WebP 和 GIF 可作为模型图片输入；Base64 不持久化到 Agent Session、ContextSnapshot 或 Trace。
+
+生成 Requirement Brief 时，正式 `asset_metadata_inspect` 在 macOS Seatbelt 中解析冻结的附件集合：文字 PDF / UTF-8 文本返回有页码的文字，图片返回像素元数据，无文字 PDF 显示 `needs_ocr`。最大 100 页、8,000 个 Swift 字符；截断状态随 Artifact 与导出保留。资料内容是非权威来源，不会自动确认 Fact。没有成功解析的附件不能满足来源完成门槛，非 macOS 不能自动无沙箱降级。`npm run dev` 会先编译自写原生程序，需要 Apple Command Line Tools。
 
 Background Task POST 接受与普通消息相同的 `{ messageId, content }`，返回 `202`。公开状态不回传消息正文，只包含 Task、Conversation、Message ID、Queue 状态、投递/失败计数和脱敏失败分类。任务 payload 受 64 KiB 上限约束并纳入 jobId 幂等冲突判断；Scheduler 以 at-least-once 语义执行，同一个 `messageId` 保证 Crash 重放不会重复追加用户消息或重复已完成的模型 Turn。当前 UI 对同一会话一次只提交一个后台消息，但其他会话可以继续交互。
 
@@ -109,7 +154,7 @@ Background Task POST 接受与普通消息相同的 `{ messageId, content }`，�
 
 ## 5. 运行固定 Online Eval
 
-保持 Blackx 服务运行，在第二个终端执行：
+旧版 HTTP Online Eval 需先使用 `BLACKX_ENABLE_RUNTIME_EVAL=1 BLACKX_RUNTIME_MODE=anthropic npm run dev` 启动本机 Host；Eval CLI 自动完成本机会话握手。此端点仍禁用 Tools 并固定身份，日常启动不应启用。直接调用 Provider 的 Contract/M1 Eval 不依赖此开关。在第二个终端执行：
 
 ```bash
 BLACKX_EVAL_BASE_URL=http://127.0.0.1:5173 npm run eval:online

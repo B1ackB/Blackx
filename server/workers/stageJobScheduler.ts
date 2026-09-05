@@ -19,7 +19,7 @@ export interface StageJobHandlerResult {
 	contextSnapshotId?: string;
 }
 
-export type StageJobHandler = (lease: StageJobLease, signal: AbortSignal) => Promise<StageJobHandlerResult>;
+export type StageJobHandler = (lease: StageJobLease, signal: AbortSignal, assertActive: () => void) => Promise<StageJobHandlerResult>;
 
 export interface StageJobSchedulerOptions {
 	workerId: string;
@@ -152,16 +152,28 @@ export class StageJobScheduler {
 			const controller = new AbortController();
 			this.activeJobs.set(lease.jobId, controller);
 			let heartbeatError: unknown;
+			const assertActive = () => {
+				controller.signal.throwIfAborted();
+				try {
+					// Renew at the commit boundary too: timers may be delayed by synchronous work.
+					activeLease = this.queue.renew(activeLease, this.leaseMs);
+				} catch (error) {
+					heartbeatError = error;
+					controller.abort(error);
+					throw error;
+				}
+			};
 			const heartbeat = setInterval(() => {
 				try {
-					activeLease = this.queue.renew(activeLease, this.leaseMs);
+					assertActive();
 				} catch (error) {
 					heartbeatError = error;
 				}
 			}, this.heartbeatMs);
 			let result: StageJobHandlerResult;
 			try {
-				result = await handler(activeLease, controller.signal);
+				result = await handler(activeLease, controller.signal, assertActive);
+				assertActive();
 			} finally {
 				clearInterval(heartbeat);
 			}
@@ -223,6 +235,7 @@ export class StageJobScheduler {
 
 	stop(): void {
 		this.stopRequested = true;
+		for (const controller of this.activeJobs.values()) controller.abort(new RuntimeFailure("cancelled", "Worker stopped", false));
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
 	}

@@ -118,6 +118,7 @@ export interface ArtifactWorkspaceOptions {
 	jobPrefix: string;
 	evaluationArtifactId: string;
 	protectedFactKeys?: readonly string[];
+	assertWritable?: (state: ProposalRunState) => void;
 	startFacts?: (
 		payload: unknown,
 		conversation: ConversationView,
@@ -135,7 +136,7 @@ const proposalWorkspaceOptions: ArtifactWorkspaceOptions = {
 	evaluationArtifactId: "proposal-evaluation",
 };
 
-function runId(
+export function workspaceRunId(
 	scope: Omit<AggregateScope, "runId">,
 	conversationId: string,
 	prefix: string,
@@ -176,6 +177,7 @@ export class ProposalWorkspaceApiController {
 		return this.respond(() => {
 			const id = requestId(payload);
 			const { scope, conversation } = this.target(context, conversationId);
+			this.options.assertWritable?.(this.engine.load(scope));
 			const actorId = requiredId(context.actorId, "actorId");
 			const messages = conversation.messages.filter((message) => message.role === "user");
 			if (messages.length === 0) {
@@ -288,6 +290,7 @@ export class ProposalWorkspaceApiController {
 			const id = requestId(payload);
 			const selectedDecision = decision(payload);
 			const { scope } = this.target(context, conversationId);
+			this.options.assertWritable?.(this.engine.load(scope));
 			const actorId = requiredId(context.actorId, "actorId");
 			let state = this.engine.load(scope);
 			const approval = state.approval;
@@ -375,6 +378,7 @@ export class ProposalWorkspaceApiController {
 			const value = factValue(payload);
 			const unit = factUnit(payload);
 			const { scope, conversation } = this.target(context, conversationId);
+			this.options.assertWritable?.(this.engine.load(scope));
 			const actorId = requiredId(context.actorId, "actorId");
 			const state = this.engine.load(scope);
 			if (state.aggregateVersion === 0) {
@@ -426,6 +430,7 @@ export class ProposalWorkspaceApiController {
 			const actorId = requiredId(context.actorId, "actorId");
 			const state = this.engine.load(scope);
 			const current = state.facts[factKey];
+			this.options.assertWritable?.(state);
 			if (!current) {
 				throw new EnterpriseKernelError("illegal_transition", "Fact does not exist");
 			}
@@ -468,7 +473,7 @@ export class ProposalWorkspaceApiController {
 			scope: {
 				tenantId,
 				workspaceId,
-				runId: runId({ tenantId, workspaceId }, conversationId, this.options.runPrefix),
+				runId: workspaceRunId({ tenantId, workspaceId }, conversationId, this.options.runPrefix),
 			},
 		};
 	}

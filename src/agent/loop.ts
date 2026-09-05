@@ -191,7 +191,7 @@ export class AgentLoop {
 		}
 	}
 
-	async run(input: AgentRunInput, signal?: AbortSignal): Promise<AgentRunResult> {
+	async run(input: AgentRunInput, signal: AbortSignal = new AbortController().signal): Promise<AgentRunResult> {
 		const allowedTools = input.allowedTools.map((name) => {
 			const tool = this.tools.get(name);
 			if (!tool) throw new AgentCoreError("permission_denied", `Unknown allowed tool: ${name}`, false);
@@ -337,7 +337,7 @@ export class AgentLoop {
 						if (tool.risk !== "read") {
 							if (tool.idempotent && tool.createIdempotencyKey) {
 								try {
-									idempotencyKey = tool.createIdempotencyKey(call.input, input.idempotencyKey);
+									idempotencyKey = tool.createIdempotencyKey(call.input, input.idempotencyKey, { tenantId: input.tenantId, workspaceId: input.workspaceId, runId: input.runId });
 								} catch (error) {
 									throw new AgentCoreError("infrastructure_failure", "Tool idempotency key generation failed", false, { cause: error });
 								}
@@ -356,7 +356,7 @@ export class AgentLoop {
 							} else {
 								let decision;
 								try {
-									decision = await this.options.approval.authorize({
+									decision = await abortable(this.options.approval.authorize({
 										tenantId: input.tenantId,
 										workspaceId: input.workspaceId,
 										runId: input.runId,
@@ -368,8 +368,9 @@ export class AgentLoop {
 										risk: tool.risk,
 										input: call.input,
 										idempotencyKey,
-									});
+									}, signal), signal);
 								} catch (error) {
+									signal.throwIfAborted();
 									throw new AgentCoreError("infrastructure_failure", "Tool approval lookup failed", true, { cause: error });
 								}
 								if (
@@ -386,6 +387,7 @@ export class AgentLoop {
 						}
 					}
 					if (tool && !failureCode) {
+						signal.throwIfAborted();
 						let ledgerRecord: AgentToolExecutionRecord | undefined;
 						if (tool.risk !== "read") {
 							try {

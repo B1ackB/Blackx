@@ -2,7 +2,7 @@
 
 本文件约束所有在本仓库中工作的开发者和 Coding Agent。开始设计、实现、重构或评审前必须先阅读本文件。
 
-Blackx 的产品目标是以自研 Agent Core 构建面向企业的多模态长任务 Agent 产品：
+Blackx 的产品目标是以自研 Agent Core 构建面向企业的多模态长任务 Agent 产品。当前产品范围仅限包装行业，服务包装企业的售前与跟单人员，不提供家具行业入口或工作流；底层分层保持行业无关。范围调整见 [`ADR-0010`](docs/adr/0010-packaging-product-focus.md)。
 
 - `Blackx Agent Core` 提供 Agent Loop、Model Provider、Hook、Tool、Session、Context、Skill 与 Compact 等行业无关能力。
 - `Blackx Enterprise Layer` 提供 Durable Workflow、Artifact、Approval、Evaluation、Policy、Event Store、Tenant 与 Audit 等企业能力。

@@ -1,4 +1,6 @@
-# M2：定制制造需求澄清与审批闭环
+# M2：包装需求澄清与审批闭环
+
+当前范围以 [ADR-0010](adr/0010-packaging-product-focus.md) 为准：仅包装行业。下文真实模型和合成验证的历史记录保留原始范围，不作为包装真实用户验证。
 
 状态：Engineering Baseline Frozen / Synthetic Validation Passed / Real User Validation Not Performed
 更新日期：2026-09-05
@@ -6,7 +8,7 @@
 
 ## 1. 用户与问题
 
-首个目标用户是印刷厂、包装厂和定制家具厂的售前或跟单人员。他们每天需要把客户在聊天、邮件和附件中的零散描述转成可交给工程、设计或报价人员继续处理的需求单。
+首个目标用户是包装企业的售前或跟单人员。他们每天需要把客户在聊天、邮件和附件中的零散描述转成可交给包装工程、设计或报价人员继续处理的需求单。
 
 当前损失不是“不会生成漂亮方案”，而是：
 
@@ -33,7 +35,7 @@ M2 首个高频任务冻结为：
 → 形成可交给工程、设计或报价阶段的已冻结需求单
 ```
 
-印刷和家具使用同一条 Enterprise Workflow、UI 和 `requirement-brief.v1` Contract。行业差异只通过 Domain Pack 提供必填字段、行业 Skill、目录 Tool 和 Evaluator 规则，不进入 Agent Core。
+包装业务复用 Enterprise Workflow 和 `requirement-brief.v1` Contract。包装必填字段、Skill 和 Evaluator 规则由 Print Domain Pack 提供，不进入 Agent Core；家具工作流已退出当前产品范围。
 
 ## 3. 输入、Fact 与 Artifact
 
@@ -51,7 +53,7 @@ M2 支持自然语言客户 Brief 与会话附件。附件通过租户、Workspa
 
 唯一交付 Artifact 为 `requirement-brief.v1`：
 
-- `industry: print | furniture`
+- `industry: print`（当前代表包装，保留内部标识以兼容已有记录）
 - 标题和客户目标
 - 当前字段级 Fact Snapshot
 - 阻断当前阶段的 `missingRequiredFacts`
@@ -69,16 +71,9 @@ product_type, quantity, dimensions, target_market,
 target_delivery, delivery_location, artwork_status
 ```
 
-Furniture 的首批阻断字段：
+这些字段只决定 Requirement Brief 是否可以进入审批，不代表完整生产 Schema。包装材料、结构刀模和 PDF/X 等仍属于后续工程阶段，不由 M2 Requirement Brief 或生成模型保证。
 
-```text
-furniture_type, quantity, dimensions, use_environment,
-target_delivery, delivery_location, installation_required
-```
-
-这些字段只决定 Requirement Brief 是否可以进入审批，不代表完整生产 Schema。印刷材料、刀模、PDF/X、家具材料结构、五金、承重和现场测量仍属于后续工程阶段，不由 M2 Requirement Brief 或生成模型保证。
-
-`blackx-requirement-brief` Skill 明确限制模型只能返回当前行业的 Canonical Key。Worker 在写入 Event Store 前将少量常见别名确定性归一化，例如 Furniture 的 `product_type → furniture_type`、`quantity_reference → quantity`；无法映射的概括字段不进入业务 Fact，Evaluator 也拒绝 Artifact 中的非 Canonical Key。
+`blackx-requirement-brief` Skill 明确限制模型只能返回包装 Canonical Key。Worker 在写入 Event Store 前将少量常见别名确定性归一化，例如 `packaging_type → product_type`、`quantity_reference → quantity`；无法映射的概括字段不进入业务 Fact，Evaluator 也拒绝 Artifact 中的非 Canonical Key。
 
 ## 5. Tool Baseline
 
@@ -105,10 +100,10 @@ Evaluator 的 `passed` 表示 Artifact 内部一致；只有不存在缺失字�
 
 ## 7. 固定 Eval Baseline
 
-当前固定 10 个离线 Task：Print 5 个、Furniture 5 个，覆盖：
+当前固定 10 个包装离线 Task，报告标识为 `blackx-m2-packaging-workflow-baseline-v3`，覆盖：
 
 - 完整且已确认，可进入 Approval
-- 缺少尺寸、稿件状态、安装责任或交付地点，需要澄清
+- 缺少尺寸、稿件状态或交付地点，需要澄清
 - 关键字段已提取但未确认，需要 Fact Confirmation
 - 模型输出试图直接产生 Verified Fact 时失败
 - 声明缺口或下一步动作与事实不一致时失败
@@ -123,7 +118,7 @@ npm run eval:m2
 
 持久集成测试覆盖：首次生成停在 `needs_input`，服务端补充并确认全部必填 Fact，生成 Artifact v2，Evaluation 允许审批，批准具体版本后通过 Stage Gate；用同一 Event Store 重建 RunEngine 后状态保持一致。
 
-2026-09-04 的真实浏览器验收还证明：
+以下为 2026-09-04 跨行业版本的历史浏览器验收，保留原始范围，不代表当前包装产品的真实用户验证：
 
 - 用户消息先乐观显示，再收到 DeepSeek 实际回复
 - 家具 Requirement Job 从 `queued` 进入 `leased` 并最终 `completed`
@@ -148,7 +143,7 @@ npm run eval:m2
 - 进程重启后任务可继续，重复投递不重复写入
 - 记录完成率、字段提取准确率、证据引用率、澄清问题数、工具失败率、恢复率、Token、成本和耗时
 - 至少一次从创建任务到批准 Requirement Brief 的真实浏览器验收
-- Print 和 Furniture 各至少一名目标用户完成任务走查，产品负责人确认该交付物确实能进入下一工作阶段
+- 包装企业真实目标用户完成任务走查，产品负责人确认该交付物确实能进入下一工作阶段
 
 ### Gate 结论
 
@@ -156,7 +151,7 @@ npm run eval:m2
 | --- | --- | --- |
 | Product Contract、正式纵向链路、恢复、权限和指标 | 完成并冻结 | `npm run eval:m2`、`npm run check`、本文件第 7 节 |
 | 合成售前任务走查 | 通过 | [`evidence/m2-synthetic-user-validation-2026-09-05.md`](evidence/m2-synthetic-user-validation-2026-09-05.md) |
-| Print/Furniture 真实目标用户走查 | 未执行 | 没有真实用户参与，不得标记为通过 |
+| 包装真实目标用户走查 | 未执行 | 没有真实用户参与，不得标记为通过 |
 
 M2 工程基线据此标记完成并冻结，可以进入 Native Tool Sandbox、本地权限、Secret、备份恢复与发行等 M3 技术加固。该状态不等于产品价值验证完成，也不能用于宣称真实用户已经接受 Requirement Brief。
 
@@ -170,8 +165,8 @@ M2 不包含：
 - 多 Agent、Agent Teams、Reviewer Agent 或 RSI
 - 任意 Shell Tool、开放式插件市场或自动发布
 - 自研分布式数据库、对象存储或消息队列
-- 同时实现完整 Print 与 Furniture 工程知识库
+- 同时扩展其他行业或建立完整包装工程知识库
 
 如果 Requirement Brief 不能稳定减少售前到工程之间的返工，停止扩展框架，先重新验证用户、任务和 Artifact。
 
-M2 工程与合成验证范围已经关闭并冻结。明确遗留项是 Print/Furniture 真实目标用户走查，以及在真实任务上积累足以判断长期质量趋势的样本；该遗留不阻塞 M3 安全加固，但阻塞对外试点结论、产品价值声明和 RSI。Provider 价格仍未配置，因此只记录 Token 与 `costStatus=unconfigured`，不伪造账单金额。
+M2 已有工程与合成验证记录，当前产品和固定基线收敛为包装。明确遗留项是包装真实目标用户走查，以及在真实任务上积累足以判断长期质量趋势的样本；该遗留不阻塞 M3 安全加固，但阻塞对外试点结论、产品价值声明和 RSI。Provider 价格仍未配置，因此只记录 Token 与 `costStatus=unconfigured`，不伪造账单金额。

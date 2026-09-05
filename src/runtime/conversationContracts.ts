@@ -1,6 +1,14 @@
 import type { ProposalRunState } from "../enterprise/contracts";
 import type { RuntimeUsage } from "./contracts";
 
+export interface RuntimeActivity {
+	executionId: string;
+	phase: "starting" | "model" | "tool" | "completed" | "paused" | "failed";
+	updatedAt: string;
+	iteration?: number;
+	tool?: string;
+}
+
 export interface ConversationMessage {
 	messageId: string;
 	role: "user" | "assistant";
@@ -127,13 +135,14 @@ export interface RequirementBriefMetricsView {
 }
 
 export interface RequirementBriefWorkspaceView extends ProposalWorkspaceView {
+	readOnlyReason?: string;
 	metrics: RequirementBriefMetricsView;
 }
 
 export interface RequirementBriefRunMetricsPoint {
 	runId: string;
 	conversationId: string;
-	industry?: "print" | "furniture";
+	industry?: "print";
 	stageStatus: ProposalRunState["stageStatus"];
 	evaluationPassed: boolean | null;
 	approvalEligible: boolean;

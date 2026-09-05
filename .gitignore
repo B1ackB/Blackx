@@ -4,3 +4,5 @@
 /dist/
 /.blackx-data/
 *.tsbuildinfo
+/.blackx-tools/
+/.blackx-tool-inputs/

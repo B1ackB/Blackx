@@ -188,6 +188,13 @@ export class AnthropicModelProvider implements AgentModelProvider {
 			);
 		}
 		return {
+			telemetry: {
+				model: typeof upstream.model === "string" && /^[A-Za-z0-9._:/-]{1,128}$/.test(upstream.model) ? upstream.model : this.model,
+				stopReason: ["end_turn", "tool_use", "stop_sequence"].includes(upstream.stop_reason ?? "") ? upstream.stop_reason! : "unknown",
+				inputTokens: upstream.usage.input_tokens, outputTokens: upstream.usage.output_tokens,
+				cacheReadTokens: Number.isSafeInteger(upstream.usage.cache_read_input_tokens) && upstream.usage.cache_read_input_tokens! >= 0 ? upstream.usage.cache_read_input_tokens! : null,
+				cacheWriteTokens: Number.isSafeInteger(upstream.usage.cache_creation_input_tokens) && upstream.usage.cache_creation_input_tokens! >= 0 ? upstream.usage.cache_creation_input_tokens! : null,
+			},
 			text: upstream.content
 				.filter((block) => block.type === "text")
 				.map((block) => block.text)

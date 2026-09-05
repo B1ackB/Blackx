@@ -53,7 +53,7 @@ function responseFailure(response: ConversationApiResponse): RuntimeFailure {
 export class BackgroundConversationWorker {
 	constructor(private readonly conversations: ConversationApiController) {}
 
-	async execute(lease: StageJobLease): Promise<StageJobHandlerResult> {
+	async execute(lease: StageJobLease, signal?: AbortSignal, assertActive?: () => void): Promise<StageJobHandlerResult> {
 		const message = payload(lease.payload);
 		const context: ConversationApiContext = {
 			tenantId: lease.tenantId,
@@ -64,7 +64,7 @@ export class BackgroundConversationWorker {
 			context,
 			lease.runId,
 			{ messageId: message.messageId, content: message.content },
-			{ retryIncomplete: true },
+			{ retryIncomplete: true, signal, assertActive },
 		);
 		if (response.status !== 200) throw responseFailure(response);
 		return { status: "completed" };

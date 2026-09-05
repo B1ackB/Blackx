@@ -34,6 +34,27 @@ const usage = {
 };
 
 describe("Blackx Agent Runtime contract", () => {
+	it("aborts approval waits and prevents late approval from executing a stopped turn", async () => {
+		let release!: (value: { approved: boolean; approvalId: string }) => void;
+		let approvalSignal: AbortSignal | undefined;
+		const execute = vi.fn(async () => "must not run");
+		const tool: AgentHostTool = { name: "approval-wait", description: "Wait for review", inputSchema: { type: "object" }, execution: "host", risk: "write", idempotent: true, timeoutMs: 1000, maxResultChars: 100, validate: () => true, createIdempotencyKey: () => "review-once", execute };
+		const runtime = new BlackxAgentRuntime({
+			provider: { generate: async () => ({ text: "", toolCalls: [{ id: "call", name: tool.name, input: {} }], usage }) },
+			tools: [tool], skills: new SkillRegistry(), audit: { append: async () => {} },
+			approval: { authorize: async (_request, signal) => { approvalSignal = signal; return new Promise((resolve) => { release = resolve; }); } },
+		});
+		const abort = new AbortController();
+		const pending = runtime.executeTurn({ ...request, allowedTools: [tool.name], policy: { ...request.policy, sandboxMode: "workspace-write", approvalPolicy: "required" } }, abort.signal);
+		const failed = expect(pending).rejects.toMatchObject({ code: "cancelled" });
+		await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+		abort.abort(); await failed;
+		expect(approvalSignal?.aborted).toBe(true);
+		release({ approved: true, approvalId: "too-late" });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(execute).not.toHaveBeenCalled();
+	});
+
 	it("provides a deterministic Fake with resumable session identity", async () => {
 		const runtime = new FakeAgentRuntime();
 		const first = await runtime.executeTurn(request);

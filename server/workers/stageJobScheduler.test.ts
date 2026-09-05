@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileArtifactContentStore } from "../artifacts/fileArtifactStore";
 import { InMemoryEnterpriseEventStore } from "../../src/enterprise/inMemoryEventStore";
 import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
@@ -22,6 +22,7 @@ const temporaryDirectories: string[] = [];
 
 class SlicedRuntime implements AgentRuntimePort {
 	readonly requests: RuntimeTurnRequest[] = [];
+	readonly signals: Array<AbortSignal | undefined> = [];
 
 	constructor(
 		private pausesRemaining: number,
@@ -34,8 +35,9 @@ class SlicedRuntime implements AgentRuntimePort {
 		return Promise.resolve({ adapter: "fake", online: true });
 	}
 
-	async executeTurn(request: RuntimeTurnRequest): Promise<RuntimeTurnResult> {
+	async executeTurn(request: RuntimeTurnRequest, signal?: AbortSignal): Promise<RuntimeTurnResult> {
 		this.requests.push(request);
+		this.signals.push(signal);
 		if (this.delayMs > 0) {
 			await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 		}
@@ -98,7 +100,7 @@ function prepare(
 		leaseMs: 1_000,
 		...schedulerOptions,
 		handlers: {
-			proposal: (lease) => proposalWorker.executeLease(lease),
+			proposal: (lease, signal, guard) => proposalWorker.executeLease(lease, signal, guard),
 			...schedulerOptions.handlers,
 		},
 	});
@@ -114,12 +116,46 @@ function prepare(
 }
 
 afterEach(() => {
+	vi.useRealTimers();
 	for (const directory of temporaryDirectories.splice(0)) {
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
 
 describe("StageJobScheduler", () => {
+	it("aborts on lost ownership and rejects a non-cooperative provider's late Artifact", async () => {
+		vi.useFakeTimers();
+		let current = new Date("2026-09-05T00:00:00Z");
+		const runtime = new SlicedRuntime(0, JSON.stringify(createDeterministicProposal({})), 0, 60);
+		const { command, queue, scheduler, engine } = prepare(runtime, () => current, { leaseMs: 30, heartbeatMs: 5 });
+		queue.enqueue(proposalStageJob(command));
+		const initialVersion = engine.load(command).aggregateVersion;
+		const pending = scheduler.runNext().catch((error: unknown) => error);
+		current = new Date(current.getTime() + 31);
+		const successor = queue.claim("new-worker", 1000);
+		expect(successor).toBeDefined();
+		await vi.advanceTimersByTimeAsync(5);
+		expect(runtime.signals[0]?.aborted).toBe(true);
+		await vi.advanceTimersByTimeAsync(55);
+		expect(await pending).toMatchObject({ code: "lease_lost" });
+		expect(engine.load(command).aggregateVersion).toBe(initialVersion);
+		expect(engine.load(command).currentProposal).toBeUndefined();
+		expect(queue.get(successor!.jobId)?.status).toBe("leased");
+	});
+
+	it("checks the lease at commit even when the heartbeat timer has not run", async () => {
+		let current = new Date("2026-09-05T00:00:00Z");
+		let resolve!: (result: RuntimeTurnResult) => void;
+		const runtime: AgentRuntimePort = { health: async () => ({ adapter: "fake", online: true }), executeTurn: () => new Promise((done) => { resolve = done; }) };
+		const { command, queue, scheduler, engine } = prepare(runtime, () => current);
+		queue.enqueue(proposalStageJob(command));
+		const pending = scheduler.runNext();
+		current = new Date(current.getTime() + 1001);
+		resolve({ executionId: "late", adapter: "fake", status: "completed", contextSnapshotId: "late-context", finalResponse: JSON.stringify(createDeterministicProposal({})), events: [] });
+		await expect(pending).rejects.toMatchObject({ code: "lease_lost" });
+		expect(engine.load(command).currentProposal).toBeUndefined();
+	});
+
 	it("releases the worker after each slice and schedules the same Session again", async () => {
 		const proposal = createDeterministicProposal({
 			quantity: {
@@ -177,6 +213,7 @@ describe("StageJobScheduler", () => {
 	});
 
 	it("renews a lease while a slow slice is still running", async () => {
+		vi.useFakeTimers();
 		const proposal = createDeterministicProposal({
 			quantity: {
 				key: "quantity",
@@ -196,9 +233,10 @@ describe("StageJobScheduler", () => {
 		);
 		queue.enqueue(proposalStageJob(command, { maxSlices: 4 }));
 		const running = scheduler.runNext();
-		await new Promise((resolve) => setTimeout(resolve, 40));
+		await vi.advanceTimersByTimeAsync(40);
 
 		expect(queue.claim("worker-competing", 30)).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(20);
 		expect(await running).toMatchObject({ status: "completed" });
 	});
 

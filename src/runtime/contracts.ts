@@ -118,6 +118,7 @@ export interface RuntimeHealth {
 	adapter: RuntimeAdapterKind;
 	online: boolean;
 	coreVersion?: string;
+	providerStatus?: "configured" | "last_request_succeeded" | "last_request_failed";
 }
 
 export interface AgentRuntimePort {

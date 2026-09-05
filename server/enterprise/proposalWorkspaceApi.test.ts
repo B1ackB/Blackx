@@ -62,7 +62,7 @@ function harness() {
 	const worker = new ProposalWorker(engine, new FakeAgentRuntime(), artifacts);
 	const scheduler = new StageJobScheduler(queue, {
 		workerId: "proposal-workspace-test",
-		handlers: { proposal: (lease) => worker.executeLease(lease) },
+		handlers: { proposal: (lease, signal, guard) => worker.executeLease(lease, signal, guard) },
 	});
 	return {
 		conversationId: created.conversationId,

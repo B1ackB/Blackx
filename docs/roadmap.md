@@ -7,7 +7,9 @@
 
 ## 1. 当前判断
 
-Blackx 已完成 M0 自研 Agent Core、M1 Durable Single-Agent Runtime 和 M2 定制制造需求澄清工程基线。M2 把印刷或家具客户 Brief 转成可确认、可版本化、可审批的 Requirement Brief；固定正式链路、合成样例和跨 Run 指标已冻结，但没有真实目标用户参与。
+Blackx 已建立 M0 自研 Agent Core、M1 Durable Runtime 和 M2 需求澄清工程链路。当前产品收敛为包装行业，把包装客户 Brief 转成可确认、可版本化、可审批的 Requirement Brief；包装固定评测已替换旧跨行业基线，真实包装目标用户验证仍待完成。
+
+2026-09-05 已落实一轮四项产品工作：执行与本机访问边界、真实附件 Sandbox Tool、会话/需求单 UI、来源与版本导出。正式 macOS PDF 链路和固定 HTTP 产品验收已通过；[证据与剩余边界](evidence/local-product-slice-2026-09-05.md)单独记录，不代表 M3 全部 Gate 或真实用户价值验证通过。
 
 Print Proposal 已证明 Enterprise Kernel 可以承载一个领域纵向切片，并继续作为 Print Domain Pack 的参考实现和回归资产；它不再定义通用 M1/M2 的产品方向。新的具体产品想法在 M2 Scope Gate 冻结，在此之前不继续扩展包装功能，也不实现 RSI。
 
@@ -18,7 +20,7 @@ Print Proposal 已证明 Enterprise Kernel 可以承载一个领域纵向切片�
 
 ## 2. 当前产品边界
 
-Agent Core 和 M1 保持行业无关。M2 已冻结为定制制造售前需求澄清，以 `requirement-brief.v1` 作为统一 Artifact；Print 和 Furniture 的必填字段与行业能力通过 Domain Pack 接入。
+Agent Core 和 M1 保持行业无关。M2 聚焦包装售前需求澄清，以 `requirement-brief.v1` 作为 Artifact；包装字段与能力通过 Print Domain Pack 接入，内部标识保留 `print`。范围决定见 [ADR-0010](adr/0010-packaging-product-focus.md)。
 
 Print 保留为一个可选 Domain Pack。封口袋标准、Proposal、视觉和印前内容不删除，但不再阻塞通用 Runtime 或新产品里程碑。无论采用哪个领域，模型都不能创造权威事实、绕过审批或把生成内容直接标记为生产就绪。
 
@@ -71,7 +73,7 @@ M1 使用单机持久化、SQLite Queue 和行业无关固定 Fixture。多主�
 
 目标：确定一个用户、一项真实任务、一组最小 Tool、一个可交付 Artifact 和一个可重复 Evaluator，并从 UI 贯通输入、执行、恢复、确认和交付。
 
-工程状态：完成并冻结。正式闭环采用 `Requirement Brief`，10 个固定任务和 6 个合成售前样例覆盖 Print/Furniture 的通过、缺失和待确认路径。真实用户可用性与价值仍为显式 Validation Debt。
+工程状态：正式闭环采用 `Requirement Brief`；当前 10 个固定包装任务覆盖通过、缺失和待确认路径。此前 6 个跨行业合成售前样例保持历史证据，不能替代当前包装目标用户走查。真实用户可用性与价值仍为显式 Validation Debt。
 
 详细验收见 [`milestone-2-product-slice.md`](milestone-2-product-slice.md)。
 
@@ -98,7 +100,7 @@ M0–M2 工程基线已经关闭，近期队列转向必要的本地产品安全
 | 1 | M3 Native Tool Sandbox Gate | macOS Seatbelt Adapter、Tool Contract 与权限审批 | 路径、网络、环境、超时、子进程和逃逸回归通过 |
 | 2 | Local Permission 与 Secret | Workspace 身份、Tool 权限、Approval 和 Secret 边界 | 权限矩阵、越界回归、fail-closed 和日志脱敏通过 |
 | 3 | 本地存储与恢复 | Schema Migration、备份和恢复方案 | 升级、备份恢复和故障注入通过 |
-| 4 | 真实用户补验 | Print 与 Furniture 各一名用户完成三条任务 | 明确记录可交付判断、错误、耗时和返工反馈 |
+| 4 | 包装真实用户补验 | 包装售前与跟单目标用户完成真实包装任务 | 明确记录可交付判断、错误、耗时和返工反馈 |
 
 任何工作包若没有完成证据，不得仅以“已有界面”或“模型跑通”标记完成。
 

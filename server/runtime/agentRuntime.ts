@@ -1,3 +1,5 @@
+import type { ModelTelemetryStore } from "./modelTelemetry";
+import type { RuntimeActivity } from "../../src/runtime/conversationContracts";
 import type {
 	AgentImageAttachment,
 	AgentMessage,
@@ -24,6 +26,8 @@ import { RuntimeFailure } from "../../src/runtime/contracts";
 import { AnthropicCompatibilityError } from "../anthropic/client";
 
 export interface BlackxAgentRuntimeOptions extends AgentLoopOptions {
+	telemetry?: Pick<ModelTelemetryStore, "wrap">;
+	onActivity?: (scope: { tenantId: string; workspaceId: string; runId: string }, activity: RuntimeActivity) => void;
 	skills: SkillRegistry;
 	sessions?: AgentSessionStore;
 	snapshots?: ContextSnapshotStore;
@@ -102,8 +106,10 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 		this.clockMs = options.clockMs ?? (() => Date.now());
 	}
 
+	private providerStatus: NonNullable<RuntimeHealth["providerStatus"]> = "configured";
+
 	async health(): Promise<RuntimeHealth> {
-		return { adapter: "blackx-agent", online: true, coreVersion: "m0.1" };
+		return { adapter: "blackx-agent", online: true, coreVersion: "m0.1", providerStatus: this.providerStatus };
 	}
 
 	async executeTurn(request: RuntimeTurnRequest, signal?: AbortSignal): Promise<RuntimeTurnResult> {
@@ -139,7 +145,11 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 			sessionId,
 		};
 
+		const progress = (phase: RuntimeActivity["phase"], detail: { tool?: string; iteration?: number } = {}) => {
+			this.options.onActivity?.(scope, { executionId, phase, updatedAt: this.now(), ...detail });
+		};
 		try {
+			progress("starting");
 			const session = this.sessions.load(scope);
 			if (request.resume === true && session.revision === 0) {
 				throw new RuntimeFailure("context_failure", "Runtime Session does not exist for resume", false);
@@ -200,7 +210,10 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 					summaries: event.summary ? 1 : 0,
 				});
 			});
+			hooks.on("tool.before", (event) => { progress("tool", { tool: event.call.name, iteration: event.iteration }); });
 			hooks.on("model.before", (event) => {
+				combinedSignal.throwIfAborted();
+				progress("model", { iteration: event.iteration });
 				const snapshotId = `${snapshotBaseId}-i${event.iteration}${event.attempt > 1 ? `-retry${event.attempt}` : ""}`;
 				const saved = this.snapshots.put({
 					schemaVersion: "context-snapshot.v2",
@@ -236,7 +249,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				});
 			});
 			const loop = new AgentLoop({
-				provider: this.options.provider,
+				provider: this.options.telemetry?.wrap(this.options.provider, scope, executionId) ?? this.options.provider,
 				tools: this.options.tools,
 				context: this.options.context,
 				summarizer: this.options.summarizer,
@@ -271,6 +284,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				outputSchema: request.outputSchema,
 				fallbackOutput: request.fallbackOutput,
 			}, combinedSignal), combinedSignal);
+			combinedSignal.throwIfAborted();
 			this.sessions.save(
 				scope,
 				session.revision,
@@ -343,9 +357,13 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 					: event),
 				usage: response.usage,
 			});
+			this.providerStatus = "last_request_succeeded";
+			progress(response.status);
 			return response;
 		} catch (error) {
 			const failure = classifyFailure(error, timedOut, Boolean(signal?.aborted));
+			if (failure.code !== "cancelled") this.providerStatus = "last_request_failed";
+			progress("failed");
 			traceEvents = [...traceEvents, { type: "turn.failed", message: failure.message }];
 			this.traces.putTrace({
 				schemaVersion: "runtime-trace.v1",

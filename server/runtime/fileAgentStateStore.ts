@@ -34,10 +34,12 @@ interface SessionFile extends AgentSessionScope {
 	revision: number;
 	messages: AgentMessage[];
 	updatedAt: string;
+	deletion?: { actorId: string; deletedAt: string };
 }
 
 export interface StoredAgentSession extends AgentSessionScope, AgentSessionState {
 	updatedAt: string;
+	deletion?: { actorId: string; deletedAt: string };
 }
 
 function segment(value: string, name: string): string {
@@ -161,6 +163,7 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 
 	load(scope: AgentSessionScope): AgentSessionState {
 		const session = this.readSession(scope);
+		if (session?.deletion) throw new AgentStateStoreError("not_found", "Agent Session was deleted");
 		return session
 			? { revision: session.revision, messages: structuredClone(session.messages) }
 			: { revision: 0, messages: [] };
@@ -172,10 +175,26 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 	}
 
 	getSession(scope: AgentSessionScope): StoredAgentSession | undefined {
-		return this.readSession(scope);
+		const session = this.readSession(scope);
+		return session?.deletion ? undefined : session;
 	}
 
-	listSessions(scope: { tenantId: string; workspaceId: string }): StoredAgentSession[] {
+	deleteSession(scope: AgentSessionScope, actorId: string, deletedAt: string): StoredAgentSession | undefined {
+		segment(actorId, "actorId");
+		if (!Number.isFinite(Date.parse(deletedAt))) throw new AgentStateStoreError("unavailable", "Deletion date is invalid");
+		const path = this.sessionPath(scope);
+		return this.locked(path, () => {
+			const current = this.readSession(scope);
+			if (!current || current.deletion) return current;
+			// The tombstone and audit attribution share the session's atomic write and lock.
+			// Retain source history for artifact provenance; ordinary reads and all later saves are denied.
+			const next: SessionFile = { ...current, schemaVersion: "agent-session.v1", revision: current.revision + 1, deletion: { actorId, deletedAt } };
+			this.write(path, next);
+			return this.parseSession(next);
+		});
+	}
+
+	listSessions(scope: { tenantId: string; workspaceId: string }, includeDeleted = false): StoredAgentSession[] {
 		const tenantId = segment(scope.tenantId, "tenantId");
 		const workspaceId = segment(scope.workspaceId, "workspaceId");
 		const workspaceDirectory = join(this.rootDirectory, tenantId, workspaceId);
@@ -191,7 +210,7 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 				if (value.tenantId !== tenantId || value.workspaceId !== workspaceId || value.runId !== run.name) {
 					throw new AgentStateStoreError("corrupt", "Agent Session path does not match its scope");
 				}
-				sessions.push(value);
+				if (includeDeleted || !value.deletion) sessions.push(value);
 			}
 		}
 		return sessions.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
@@ -380,7 +399,10 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 			Number(value.revision) < 1 ||
 			!messages(value.messages) ||
 			typeof value.updatedAt !== "string" ||
-			!Number.isFinite(Date.parse(value.updatedAt))
+			!Number.isFinite(Date.parse(value.updatedAt)) ||
+			(value.deletion !== undefined && (!record(value.deletion) ||
+				typeof value.deletion.actorId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.deletion.actorId) ||
+				typeof value.deletion.deletedAt !== "string" || !Number.isFinite(Date.parse(value.deletion.deletedAt))))
 		) {
 			throw new AgentStateStoreError("corrupt", "Agent Session file is invalid");
 		}
@@ -392,6 +414,7 @@ export class FileAgentStateStore implements AgentSessionStore, ContextSnapshotSt
 			revision: Number(value.revision),
 			messages: structuredClone(value.messages),
 			updatedAt: value.updatedAt,
+			...(value.deletion ? { deletion: structuredClone(value.deletion) as StoredAgentSession["deletion"] } : {}),
 		};
 	}
 

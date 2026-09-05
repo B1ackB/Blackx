@@ -174,10 +174,12 @@ export class FileConversationAttachmentStore {
 		if (!existsSync(metadataPath) || !existsSync(contentPath)) {
 			throw new ConversationAttachmentError("attachment_not_found", "attachment does not exist");
 		}
-		return {
-			attachment: this.readMetadata(metadataPath),
-			content: readFileSync(contentPath),
-		};
+		const attachment = this.readMetadata(metadataPath);
+		const content = readFileSync(contentPath);
+		if (attachment.attachmentId !== targetId || attachment.conversationId !== scope.conversationId || attachment.size !== content.length || createHash("sha256").update(content).digest("hex") !== attachment.sha256) {
+			throw new ConversationAttachmentError("attachment_conflict", "attachment integrity check failed");
+		}
+		return { attachment, content };
 	}
 
 	digest(scope: ConversationAttachmentScope): string | undefined {
