@@ -32,7 +32,8 @@ Compact Summarizer 是无 Tool 的辅助调用，显式请求 provider-neutral `
 | Token Count | online-supported | 使用 `POST /v1/messages/count_tokens`；DeepSeek 真实 Contract 已通过 |
 | stop reason | offline-supported | context window、max tokens、refusal 和 pause turn 均映射为结构化 Runtime Failure |
 | 流式输出 | unsupported | 当前只发送 `stream: false` |
-| 图片、文件、音频 | unsupported | 当前 `AgentMessage` 仅支持文本与 Tool 结构 |
+| PNG / JPEG / WebP / GIF 图片输入 | offline-supported | `AgentMessage` 图片引用在调用前从租户附件 Store 重水化，并映射为 Anthropic `image/base64`；Base64 不进入 Session、ContextSnapshot 或 Trace；尚未经过 DeepSeek 在线图片 Gate |
+| PDF、其他文件、音频 | unsupported | 文件可持久化和追溯，但尚无文档解析、OCR 或音频内容块 Adapter |
 | 内建 Web/Search/Computer Tool | unsupported | 首个切片只接受注册的强类型 Tool |
 | 限流、认证、取消 | offline-supported | 401/403、429、Provider 4xx/5xx 和 Abort 边界已映射；尚未逐类注入在线失败 |
 | Session 恢复 | core-owned | Session/ContextSnapshot 由 Blackx Store 恢复，不依赖 Provider 会话 |

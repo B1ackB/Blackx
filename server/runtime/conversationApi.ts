@@ -8,6 +8,7 @@ import type {
 } from "../../src/runtime/conversationContracts";
 import { AgentStateStoreError, type AgentSessionScope } from "../../src/agent/state";
 import { FileAgentStateStore, type StoredAgentSession } from "./fileAgentStateStore";
+import { FileConversationAttachmentStore } from "./conversationAttachments";
 
 export interface ConversationApiContext {
 	tenantId?: string;
@@ -30,7 +31,7 @@ function id(value: unknown, name: string): string {
 }
 
 function text(value: unknown): string {
-	if (typeof value !== "string" || !value.trim() || value.length > 32_000) {
+	if (typeof value !== "string" || value.length > 32_000) {
 		throw new ConversationValidationError("message content is invalid");
 	}
 	return value.trim();
@@ -43,24 +44,31 @@ function record(value: unknown): value is Record<string, unknown> {
 function visibleMessages(session: StoredAgentSession): ConversationMessage[] {
 	return session.messages.flatMap((message, index) => {
 		if (message.role !== "user" && message.role !== "assistant") return [];
-		if (message.durable || message.toolCalls?.length || !message.content.trim()) return [];
+		if (message.durable || message.toolCalls?.length || (!message.content.trim() && !message.attachments?.length)) return [];
 		return [{
 			messageId: message.messageId ?? `${session.sessionId}-message-${index + 1}`,
 			role: message.role,
 			content: message.content,
 			createdAt: message.createdAt ?? session.updatedAt,
+			attachments: message.attachments?.map((attachment) => ({
+				name: attachment.name,
+				mediaType: attachment.mediaType,
+				sourceRef: attachment.sourceRef,
+			})),
 		}];
 	});
 }
 
 function title(messages: readonly ConversationMessage[]): string {
-	const first = messages.find((message) => message.role === "user")?.content.replace(/\s+/g, " ");
-	return first ? `${first.slice(0, 30)}${first.length > 30 ? "…" : ""}` : "新会话";
+	const first = messages.find((message) => message.role === "user");
+	const value = first?.content.replace(/\s+/g, " ") || first?.attachments?.[0]?.name;
+	return value ? `${value.slice(0, 30)}${value.length > 30 ? "…" : ""}` : "新会话";
 }
 
 function view(session: StoredAgentSession): ConversationView {
 	const messages = visibleMessages(session);
-	const last = messages.at(-1)?.content.replace(/\s+/g, " ") ?? "尚未发送消息";
+	const latest = messages.at(-1);
+	const last = latest?.content.replace(/\s+/g, " ") || latest?.attachments?.map((attachment) => attachment.name).join("、") || "尚未发送消息";
 	return {
 		conversationId: session.sessionId,
 		title: title(messages),
@@ -94,6 +102,7 @@ export class ConversationApiController {
 		private readonly now: () => string = () => new Date().toISOString(),
 		private readonly nextId: () => string = () => crypto.randomUUID(),
 		private readonly allowedTools: readonly string[] = [],
+		private readonly attachments?: FileConversationAttachmentStore,
 	) {}
 
 	list(context: ConversationApiContext): ConversationApiResponse {
@@ -165,6 +174,29 @@ export class ConversationApiController {
 			const actorId = id(context.actorId, "actorId");
 			const messageId = id(payload.messageId, "messageId");
 			const content = text(payload.content);
+			if (
+				payload.attachmentIds !== undefined &&
+				(!Array.isArray(payload.attachmentIds) ||
+					payload.attachmentIds.length > 8 ||
+					payload.attachmentIds.some((attachmentId) => typeof attachmentId !== "string"))
+			) {
+				throw new ConversationValidationError("attachmentIds are invalid");
+			}
+			const attachmentIds = [...new Set((payload.attachmentIds ?? []) as string[])];
+			if (!content && attachmentIds.length === 0) {
+				throw new ConversationValidationError("message content or an image attachment is required");
+			}
+			if (attachmentIds.length && !this.attachments) {
+				throw new ConversationValidationError("conversation attachments are unavailable");
+			}
+			const imageAttachments = this.attachments?.imageReferences({
+				tenantId: target.tenantId,
+				workspaceId: target.workspaceId,
+				conversationId: target.sessionId,
+			}, attachmentIds) ?? [];
+			if (imageAttachments.length !== attachmentIds.length) {
+				throw new ConversationValidationError("only model-ready image attachments can be sent to the model");
+			}
 			const health = await this.runtime.health();
 			if (health.adapter !== "blackx-agent") {
 				return { status: 503, body: { code: "real_provider_required" } };
@@ -173,7 +205,10 @@ export class ConversationApiController {
 			if (!existing) return { status: 404, body: { code: "conversation_not_found" } };
 			const userIndex = existing.messages.findIndex((message) => message.messageId === messageId);
 			if (userIndex >= 0) {
-				if (existing.messages[userIndex]?.content !== content) {
+				if (
+					existing.messages[userIndex]?.content !== content ||
+					JSON.stringify(existing.messages[userIndex]?.attachments ?? []) !== JSON.stringify(imageAttachments)
+				) {
 					return { status: 409, body: { code: "message_conflict" } };
 				}
 				const completed = existing.messages.slice(userIndex + 1).some((message) => message.role === "assistant");
@@ -193,6 +228,7 @@ export class ConversationApiController {
 					messageId,
 					createdAt,
 					pinned: true,
+					attachments: imageAttachments,
 				};
 				this.sessions.save(target, existing.revision, [...existing.messages, userMessage], createdAt);
 			}

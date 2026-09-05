@@ -59,5 +59,5 @@ npm run eval:offline
 ## 当前边界
 
 - 页面目前使用本地开发身份 `local-user/default-workspace`；生产身份认证与 RBAC 尚未接入。
-- UI 已接入实时 Conversation API，但 Proposal Artifact、Approval、Queue 指标和 DLQ 仍只有服务端 API，没有完整运维页面。
+- Requirement Brief UI 已接入 Artifact、Evaluation、Approval、Run 级指标和跨 Run 时间序列；完整 Queue/DLQ 查询和 redrive 仍只有受保护的运维 API。
 - Agent 会话是交互和模型上下文，不替代 Run、Stage、Artifact、Approval 或 Event Store 的权威业务状态。

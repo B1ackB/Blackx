@@ -498,10 +498,13 @@ export class DurableStageJobQueue implements StageJobQueue {
 				candidate.runId === scope.runId);
 			if (!job) throw new StageJobQueueError("job_conflict", "Stage Job does not exist in this scope");
 			if (job.status === "cancelled" || job.status === "completed") return clone(job);
-			if (job.status !== "queued") {
-				throw new StageJobQueueError("job_conflict", "Only a queued Stage Job can be cancelled");
+			if (job.status !== "queued" && job.status !== "leased") {
+				throw new StageJobQueueError("job_conflict", "Only a queued or leased Stage Job can be cancelled");
 			}
 			const updated: StageJob = { ...job, status: "cancelled", updatedAt: this.now().toISOString() };
+			delete updated.leaseId;
+			delete updated.leaseOwner;
+			delete updated.leaseExpiresAt;
 			jobs[jobs.indexOf(job)] = updated;
 			return clone(updated);
 		});

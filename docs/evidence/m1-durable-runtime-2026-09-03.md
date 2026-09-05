@@ -1,6 +1,6 @@
 # M1 Durable Single-Agent Runtime Evidence
 
-日期：2026-09-03
+日期：2026-09-03；行业无关集成链补充验证：2026-09-04
 结论：Passed
 Contract：`blackx-m1-durable-runtime-v1`
 
@@ -8,13 +8,18 @@ Contract：`blackx-m1-durable-runtime-v1`
 
 ```text
 Research Task
+→ deterministic Stage Job
+→ generic Stage Job Scheduler
+→ Research Fixture Worker
 → research_source_read(source-session)
 → research_source_read(source-recovery)
-→ Evidence Report JSON
+→ immutable Evidence Report Artifact v1
 → deterministic schema/source/lineage evaluation
+→ version-bound Approval
+→ passed Stage Gate
 ```
 
-该 Fixture 不包含包装字段或 Print Skill。输出只允许两个固定 Fact，并要求分别引用精确来源，同时保留 `fixture_sources_only` 限制。
+该 Fixture 不包含包装字段、Print Skill 或 Proposal Worker。输出只允许两个固定 Fact，并要求分别引用精确来源，同时保留 `fixture_sources_only` 限制。`StageJobScheduler` 已移除对 Proposal Worker 的构造依赖，只通过 `stageId → handler` 注册 Worker。
 
 ## 离线证据
 
@@ -29,14 +34,24 @@ structured artifact: passed
 fact lineage: passed
 explicit evidence limit: passed
 durable runtime evidence: passed
+job status: completed
+artifact: artifact://evidence-report/v1
+evaluation: passed
+evaluation report: artifact://research-evaluation/v1
+approval: approved, bound to evidence-report v1
+stage status: passed
 ```
+
+集成测试还验证：同一个确定性 Job 重复入队不会产生第二个队列项；错误 Artifact Version 无法通过 Approval；Evaluation 失败会进入非重试 DLQ 且不会请求 Approval；Artifact、Evaluation、Approval 和 Stage Gate 的事件顺序固定。
+
+失败路径首次运行还发现：Runtime 未返回 Usage 时，Evaluation Report 中的可选 `usage: undefined` 会被 JSON Artifact Store 拒绝，进而把 `invalid_output` 误分类为可重试的存储故障。评分边界现已在 Usage 缺失时省略该字段，并由同一失败链路测试覆盖。
 
 全量工程检查：
 
 ```text
 command: npm run check
-test files: 29 passed
-tests: 137 passed
+test files: 30 passed
+tests: 139 passed
 typecheck: passed
 production build: passed
 ```
@@ -70,6 +85,8 @@ production build: passed
 ```
 
 Online Gate 实际事件顺序包含两次 `model.started/model.completed`、两次 `tool.started/tool.completed`、不可变 Context Snapshot、Session 和 Turn completion。
+
+该 Online 结果是 2026-09-03 的 Runtime Gate 证据。2026-09-04 已让 `eval:m1-online` 走同一条 Queue → Worker → Artifact → Evaluation → Approval 链路，但本次变更没有重新调用外部模型，因此不把旧结果升级为新的 Online 全链路验证。
 
 ## 本轮发现并修复的失败
 

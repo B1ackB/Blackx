@@ -1,9 +1,10 @@
 import { SkillRegistry } from "../../src/agent/skills";
 import { printSkills } from "../../src/print/skills";
+import { manufacturingSkills } from "../../src/manufacturing/skills";
 import type { AgentTool } from "../../src/agent/contracts";
 import type { AgentRuntimePort } from "../../src/runtime/contracts";
 import { AnthropicMessagesClient } from "../anthropic/client";
-import { BlackxAgentRuntime } from "./agentRuntime";
+import { BlackxAgentRuntime, type BlackxAgentRuntimeOptions } from "./agentRuntime";
 import { AnthropicModelProvider } from "./anthropicModelProvider";
 import { FakeAgentRuntime } from "./fakeAgentRuntime";
 import { FileAgentStateStore } from "./fileAgentStateStore";
@@ -16,6 +17,7 @@ export interface RuntimeServices {
 export interface RuntimeServicesOptions {
 	tools?: readonly AgentTool[];
 	autonomouslyApprovedTools?: ReadonlySet<string>;
+	resolveImageAttachment?: BlackxAgentRuntimeOptions["resolveImageAttachment"];
 }
 
 export function validateAnthropicBaseUrl(value: string): string {
@@ -40,7 +42,15 @@ export function createRuntime(
   const mode = environment.BLACKX_RUNTIME_MODE ?? "fake";
 	const state = new FileAgentStateStore(environment.BLACKX_AGENT_STATE_PATH ?? ".blackx-data/agent");
   if (mode === "fake") {
-		return { runtime: new FakeAgentRuntime({ sessions: state, snapshots: state }), state };
+		return {
+			runtime: new FakeAgentRuntime({
+				sessions: state,
+				snapshots: state,
+				tools: options.tools,
+				resolveImageAttachment: options.resolveImageAttachment,
+			}),
+			state,
+		};
   }
 
   if (mode === "anthropic") {
@@ -59,8 +69,9 @@ export function createRuntime(
 					new AnthropicMessagesClient({ baseUrl, apiKey }),
 					model,
 				),
-				skills: new SkillRegistry(printSkills),
+				skills: new SkillRegistry([...printSkills, ...manufacturingSkills]),
 				tools: options.tools,
+				resolveImageAttachment: options.resolveImageAttachment,
 				approval: {
 					authorize: async (request) => options.autonomouslyApprovedTools?.has(request.tool)
 						? { approved: true, approvalId: `policy:${request.tool}:v1` }

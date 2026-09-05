@@ -90,13 +90,18 @@ POST /api/conversations
 GET  /api/conversations/{conversationId}
 GET  /api/conversations/{conversationId}/traces
 POST /api/conversations/{conversationId}/messages
+GET  /api/conversations/{conversationId}/attachments
+POST /api/conversations/{conversationId}/attachments?requestId={requestId}&name={fileName}
+GET  /api/conversations/{conversationId}/attachments/{attachmentId}/content
 POST /api/conversations/{conversationId}/background-tasks
 GET  /api/conversations/{conversationId}/background-tasks
 GET  /api/background-tasks/{taskId}
 GET  /api/conversations/{conversationId}/cron-schedules
 ```
 
-消息接口只接受 `blackx-agent` Runtime；Fake 模式返回 `real_provider_required`。服务端会先把用户消息写入 Agent Session，再调用模型，因此页面可以立即乐观显示消息，失败或刷新时也不会依赖浏览器 `localStorage`。同一会话只允许一个进行中的 Turn。
+消息接口只接受 `blackx-agent` Runtime；Fake 模式返回 `real_provider_required`。请求体为 `{ messageId, content, attachmentIds? }`，其中 `attachmentIds` 最多选择 8 个当前会话内、可供模型读取的图片；仅图片消息允许 `content` 为空。服务端会先把用户消息和图片引用写入 Agent Session，再调用模型，因此页面可以立即乐观显示消息，失败或刷新时也不会依赖浏览器 `localStorage`。同一会话只允许一个进行中的 Turn。
+
+附件上传使用原始二进制请求体，单个文件上限 10 MB、每个会话最多 20 个附件和 50 MB，并以 `requestId` 保证幂等。文件内容、元数据和读取接口同时受 Tenant、Workspace 与 Conversation 边界约束，默认持久化到 `.blackx-data/attachments`。纯文本、Markdown、CSV 和 JSON 会作为带 `sourceRef` 的非权威来源进入下一次 Requirement Brief；不超过 5 MB 的 PNG、JPEG、WebP 和 GIF 可映射为 Anthropic-compatible 原生图片内容块。Runtime 在每次模型调用前按租户引用读取并校验 SHA-256，Base64 不持久化到 Agent Session、ContextSnapshot 或 Trace。PDF、其他文件和超过 5 MB 的图片当前仍仅保存与展示元数据，不进入文档解析器。
 
 Background Task POST 接受与普通消息相同的 `{ messageId, content }`，返回 `202`。公开状态不回传消息正文，只包含 Task、Conversation、Message ID、Queue 状态、投递/失败计数和脱敏失败分类。任务 payload 受 64 KiB 上限约束并纳入 jobId 幂等冲突判断；Scheduler 以 at-least-once 语义执行，同一个 `messageId` 保证 Crash 重放不会重复追加用户消息或重复已完成的模型 Turn。当前 UI 对同一会话一次只提交一个后台消息，但其他会话可以继续交互。
 
@@ -117,7 +122,7 @@ npm run eval:m1
 npm run eval:m1-online
 ```
 
-`eval:m1-online` 直接使用当前 Shell 中的 Anthropic-compatible 配置，不要求先启动 Web 服务。设置 `BLACKX_EVAL_REPORT_PATH` 可以把不含 Secret 的 JSON 报告写入指定路径。
+`eval:m1` 和 `eval:m1-online` 都会贯通 Queue → Worker → Artifact Version → Evaluation → Approval → Stage Gate；前者使用固定离线模型，后者直接使用当前 Shell 中的 Anthropic-compatible 配置，不要求先启动 Web 服务。设置 `BLACKX_EVAL_REPORT_PATH` 可以把不含 Secret 的 JSON 报告写入指定路径。
 
 `eval:anthropic-contract` 在未配置时默认使用官方 `https://api.anthropic.com` 与 `claude-haiku-4-5-20251001`，但生产或长期回归应显式固定 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_MODEL`。失败报告只保留标准化 Runtime/Provider code 和状态，不输出 API Key 或 Provider 原始正文。`providerStatus` 表示真实上游 HTTP 状态，`adapterStatus` 表示 Adapter 在 HTTP 成功后产生的本地 Contract 状态。
 
@@ -191,6 +196,7 @@ read -s "BLACKX_OPERATOR_API_TOKEN?Operator API Token: "
 export BLACKX_OPERATOR_API_TOKEN
 export BLACKX_EVENT_STORE_PATH=".blackx-data/events.json"
 export BLACKX_ARTIFACT_STORE_PATH=".blackx-data/artifacts"
+export BLACKX_ATTACHMENT_STORE_PATH=".blackx-data/attachments"
 export BLACKX_STAGE_JOB_QUEUE_PATH=".blackx-data/stage-jobs.json"
 export BLACKX_STAGE_JOB_QUEUE_DRIVER="file"
 npm run dev
@@ -241,6 +247,14 @@ GET  /api/stage-jobs/dead-letter
 POST /api/stage-jobs/{jobId}/redrive
 ```
 
+Requirement Brief 产品指标使用普通租户/Workspace 身份读取，不需要 Worker 或 Operator Token：
+
+```text
+GET /api/requirement-brief/metrics
+```
+
+响应为 `requirement-brief-metrics-series.v1`，包含按 Run 开始时间排序的时间点，以及 Evaluation/Approval/Stage 比率、候选确认准确率、来源覆盖率、澄清问题、Artifact 版本、Queue 和 Tool 失败/恢复率、Token 与耗时汇总。该接口只扫描当前 Tenant/Workspace 下 Conversation 对应的 Requirement Run；未配置 Provider 价格时返回 `costUsd=null`、`costStatus=unconfigured`。
+
 redrive 请求体必须包含当前 Job 的 `expectedUpdatedAt` 和人工原因 `reason`，可选 `additionalSlices` 为 1–32。它只允许重放当前租户/工作区中的 `dead_letter` Job，复用原 Job、Command 和 Session 身份，并记录 Actor、原因、时间与 redrive 次数。租约过期恢复另外记录 `recoveryCount`、前任 Worker、过期时间、恢复时间和检测延迟；metrics 汇总 `recoveries` 与 `recoveryDetectionDelayMs`。
 
 `BLACKX_STAGE_JOB_QUEUE_DRIVER=file` 是默认本地 Adapter。设置为 `sqlite` 时，`BLACKX_STAGE_JOB_QUEUE_PATH` 应指向 `.sqlite` 文件；该实现支持单主机多 Worker 的事务 claim，但仍不是多主机分布式 Queue。当前 Node 的 `node:sqlite` 仍可能显示 experimental warning。
@@ -251,5 +265,5 @@ Approval `approved` 只表示人工决定已经持久化，Run 仍保持 `waitin
 
 ```bash
 unset BLACKX_COMMAND_API_TOKEN BLACKX_WORKER_API_TOKEN BLACKX_OPERATOR_API_TOKEN
-unset BLACKX_EVENT_STORE_PATH BLACKX_ARTIFACT_STORE_PATH BLACKX_AGENT_STATE_PATH BLACKX_STAGE_JOB_QUEUE_PATH BLACKX_STAGE_JOB_QUEUE_DRIVER
+unset BLACKX_EVENT_STORE_PATH BLACKX_ARTIFACT_STORE_PATH BLACKX_ATTACHMENT_STORE_PATH BLACKX_AGENT_STATE_PATH BLACKX_STAGE_JOB_QUEUE_PATH BLACKX_STAGE_JOB_QUEUE_DRIVER
 ```

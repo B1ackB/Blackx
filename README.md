@@ -2,7 +2,7 @@
 
 Blackx 是一个拥有自研 Agent Core、面向可验证交付物的长任务 Agent 产品。Agent Core 与当前 M1 保持行业无关；Print 作为已存在的 Domain Pack 和纵向回归资产保留。
 
-当前阶段：M0 Agent Core 与 M1 Durable Single-Agent Runtime 已冻结，并分别通过 DeepSeek Anthropic-compatible Online Gate。自研 Core 已覆盖 Loop、Hook、Context、Skill、Compact、强类型 Tool、持久 Session/ContextSnapshot；Durable Runtime 已覆盖状态机、事件重放、幂等命令、Artifact/Fact Version、Worker slice、Transactional Outbox、单主机 SQLite Queue、Background/Cron、Crash Recovery、持久 Trace 和审批绑定。当前进入 M2 Scope Gate；多主机生产存储和受控 RSI 不在当前实现范围。
+当前阶段：M0 Agent Core、M1 Durable Single-Agent Runtime 和 M2 Requirement Brief 工程基线已冻结。M2 的 10 个固定正式链路任务、6 个合成售前样例、真实 DeepSeek 浏览器闭环和跨 Run 指标已经留证；没有真实 Print/Furniture 目标用户参与，因此产品可用性、返工改善和付费意愿仍未验证。当前可进入 M3 本地 Native Tool Sandbox 与产品安全加固，但在对外试点、产品价值声明或 RSI 前必须补做真实用户验证。
 
 ## 本地演示
 
@@ -22,9 +22,12 @@ Provider 只运行在 Node.js 服务端；浏览器不会读取 API Key。模型
 ```bash
 npm run eval:offline
 npm run eval:m1
+npm run eval:m2
 ```
 
-M1 真实 DeepSeek Gate 使用 `npm run eval:m1-online`。它要求模型先调用固定只读 Source Tool，再生成经过确定性 Schema、Citation 和 Fact Lineage 检查的 Evidence Report。
+`npm run eval:m1` 会离线贯通 Queue → Worker → Artifact Version → Evaluation → Approval → Stage Gate。M1 真实 DeepSeek Gate 使用 `npm run eval:m1-online`，走同一条企业链路，并要求模型先调用固定只读 Source Tool，再生成经过确定性 Schema、Citation 和 Fact Lineage 检查的 Evidence Report。
+
+`npm run eval:m2` 验证 `requirement-brief.v1` 产品 Contract：固定 5 个 Print 与 5 个 Furniture 售前需求任务，并检查必填缺口、Fact 来源权威性、下一步动作和 Artifact 审批资格。
 
 Anthropic Messages Provider Adapter 已具备离线 Contract Test 和明确的能力矩阵；DeepSeek `deepseek-v4-flash` 已通过带 thinking 回传的真实 Tool Loop Contract。官方 Anthropic 端点仍被账户状态阻塞，且兼容 Contract 通过不等于生产完成能力。
 
@@ -46,5 +49,7 @@ Web UI 已移除 `LocalEventStore`、客户端事实投影和本地恢复模拟�
 - [产品路线图](docs/roadmap.md)
 - [M0：Blackx Agent Core](docs/milestone-0-agent-core.md)
 - [M1：Durable Single-Agent Runtime](docs/milestone-1-durable-runtime.md)
-- [M2：首个真实产品纵向闭环](docs/milestone-2-product-slice.md)
+- [M2：定制制造需求澄清与审批闭环](docs/milestone-2-product-slice.md)
+- [M2：合成用户验证样例与证据边界](docs/evidence/m2-synthetic-user-validation-2026-09-05.md)
+- [M3：Local Product Hardening 与 Native Sandbox Gate](docs/milestone-3-production-hardening.md)
 - [历史 Print Proposal 纵向切片](docs/milestone-1-proposal-slice.md)

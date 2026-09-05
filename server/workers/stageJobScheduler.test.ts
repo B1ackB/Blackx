@@ -15,6 +15,7 @@ import type {
 } from "../../src/runtime/contracts";
 import { RuntimeFailure } from "../../src/runtime/contracts";
 import { ProposalWorker } from "./proposalWorker";
+import { proposalStageJob } from "./stageJobOutbox";
 import { StageJobScheduler } from "./stageJobScheduler";
 
 const temporaryDirectories: string[] = [];
@@ -58,7 +59,7 @@ class SlicedRuntime implements AgentRuntimePort {
 function prepare(
 	runtime: AgentRuntimePort,
 	now: () => Date = () => new Date("2026-09-03T00:00:00.000Z"),
-	schedulerOptions: Partial<ConstructorParameters<typeof StageJobScheduler>[2]> = {},
+	schedulerOptions: Partial<ConstructorParameters<typeof StageJobScheduler>[1]> = {},
 ) {
 	const directory = mkdtempSync(join(tmpdir(), "blackx-stage-scheduler-"));
 	temporaryDirectories.push(directory);
@@ -91,11 +92,16 @@ function prepare(
 			return () => `lease-${++value}`;
 		})(),
 	});
-	const scheduler = new StageJobScheduler(
-		queue,
-		new ProposalWorker(engine, runtime, new FileArtifactContentStore(directory)),
-		{ workerId: "worker-scheduler", leaseMs: 1_000, maxSlices: 4, ...schedulerOptions },
-	);
+	const proposalWorker = new ProposalWorker(engine, runtime, new FileArtifactContentStore(directory));
+	const scheduler = new StageJobScheduler(queue, {
+		workerId: "worker-scheduler",
+		leaseMs: 1_000,
+		...schedulerOptions,
+		handlers: {
+			proposal: (lease) => proposalWorker.executeLease(lease),
+			...schedulerOptions.handlers,
+		},
+	});
 	const command = {
 		tenantId: base.tenantId,
 		workspaceId: base.workspaceId,
@@ -128,7 +134,7 @@ describe("StageJobScheduler", () => {
 		});
 		const runtime = new SlicedRuntime(2, JSON.stringify(proposal));
 		const { command, engine, queue, scheduler } = prepare(runtime);
-		const enqueued = scheduler.enqueueProposal(command);
+		const enqueued = queue.enqueue(proposalStageJob(command, { maxSlices: 4 }));
 
 		expect(await scheduler.runNext()).toMatchObject({
 			status: "paused",
@@ -158,8 +164,8 @@ describe("StageJobScheduler", () => {
 		let current = new Date("2026-09-03T00:00:00.000Z");
 		const proposal = createDeterministicProposal({});
 		const runtime = new SlicedRuntime(0, JSON.stringify(proposal), 1);
-		const { command, scheduler } = prepare(runtime, () => current);
-		scheduler.enqueueProposal(command);
+		const { command, queue, scheduler } = prepare(runtime, () => current);
+		queue.enqueue(proposalStageJob(command, { maxSlices: 4 }));
 
 		expect(await scheduler.runNext()).toMatchObject({
 			status: "retry_scheduled",
@@ -188,7 +194,7 @@ describe("StageJobScheduler", () => {
 			() => new Date(),
 			{ leaseMs: 30, heartbeatMs: 5 },
 		);
-		scheduler.enqueueProposal(command);
+		queue.enqueue(proposalStageJob(command, { maxSlices: 4 }));
 		const running = scheduler.runNext();
 		await new Promise((resolve) => setTimeout(resolve, 40));
 
@@ -221,5 +227,42 @@ describe("StageJobScheduler", () => {
 
 		expect(await scheduler.runNext()).toMatchObject({ status: "completed", job: { jobId: "background-a" } });
 		expect(handledJobId).toBe("background-a");
+	});
+
+	it("cooperatively aborts and releases a leased job when it is cancelled", async () => {
+		let started!: () => void;
+		const running = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const runtime = new SlicedRuntime(0, "unused");
+		const { queue, scheduler } = prepare(runtime, undefined, {
+			handlers: {
+				"cancel-stage": async (_lease, signal) => {
+					started();
+					await new Promise<void>((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(
+							new RuntimeFailure("execution_failed", "Stage Job cancelled", false),
+						), { once: true });
+					});
+					return { status: "completed" };
+				},
+			},
+		});
+		const job = queue.enqueue({
+			tenantId: "tenant-scheduler",
+			workspaceId: "workspace-scheduler",
+			runId: "cancel-run",
+			stageId: "cancel-stage",
+			jobId: "cancel-active",
+			commandId: "cancel-command",
+			correlationId: "cancel-correlation",
+			expectedVersion: 0,
+			sessionId: "cancel-session",
+		});
+		const result = scheduler.runNext();
+		await running;
+
+		expect(scheduler.cancel(job.jobId, job)).toMatchObject({ status: "cancelled" });
+		expect(await result).toMatchObject({ status: "cancelled", job: { status: "cancelled" } });
 	});
 });

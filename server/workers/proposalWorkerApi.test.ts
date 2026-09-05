@@ -10,7 +10,7 @@ import type { ProposalApiContext } from "../enterprise/proposalApi";
 import { FakeAgentRuntime } from "../runtime/fakeAgentRuntime";
 import { ProposalWorker } from "./proposalWorker";
 import { ProposalWorkerApiController } from "./proposalWorkerApi";
-import { StageJobOutbox } from "./stageJobOutbox";
+import { proposalStageJob, StageJobOutbox } from "./stageJobOutbox";
 import { StageJobScheduler } from "./stageJobScheduler";
 
 const token = "worker-api-test-token-with-sufficient-entropy";
@@ -40,15 +40,15 @@ function harness(
 	engine.create({ ...envelope, commandId: "create", expectedVersion: 0 });
 	engine.startProposal({ ...envelope, commandId: "start", expectedVersion: 1 });
 	const queue = new InMemoryStageJobQueue();
-	const scheduler = new StageJobScheduler(
-		queue,
-		new ProposalWorker(
-			engine,
-			new FakeAgentRuntime(),
-			new FileArtifactContentStore(directory),
-		),
-		{ workerId: "worker-api" },
+	const worker = new ProposalWorker(
+		engine,
+		new FakeAgentRuntime(),
+		new FileArtifactContentStore(directory),
 	);
+	const scheduler = new StageJobScheduler(queue, {
+		workerId: "worker-api",
+		handlers: { proposal: (lease) => worker.executeLease(lease) },
+	});
 	const controller = new ProposalWorkerApiController(
 		scheduler,
 		new StageJobOutbox(engine, store, queue),
@@ -148,15 +148,15 @@ describe("ProposalWorkerApiController", () => {
 	});
 
 	it("exposes tenant-scoped metrics and audited DLQ redrive only to operators", () => {
-		const { controller, queue, scheduler } = harness();
-		const job = scheduler.enqueueProposal({
+		const { controller, queue } = harness();
+		const job = queue.enqueue(proposalStageJob({
 			tenantId: "tenant-api",
 			workspaceId: "workspace-api",
 			runId: "run-api",
 			commandId: "dead-job",
 			correlationId: "trace-api",
 			expectedVersion: 2,
-		});
+		}));
 		const dead = queue.fail(queue.claim("worker-failing", 1_000)!, {
 			code: "permission_denied",
 			message: "operator decision required",

@@ -59,11 +59,11 @@ function harness() {
 	const artifacts = new FileArtifactContentStore(join(directory, "artifacts"));
 	const queue = new InMemoryStageJobQueue();
 	const outbox = new StageJobOutbox(engine, eventStore, queue);
-	const scheduler = new StageJobScheduler(
-		queue,
-		new ProposalWorker(engine, new FakeAgentRuntime(), artifacts),
-		{ workerId: "proposal-workspace-test" },
-	);
+	const worker = new ProposalWorker(engine, new FakeAgentRuntime(), artifacts);
+	const scheduler = new StageJobScheduler(queue, {
+		workerId: "proposal-workspace-test",
+		handlers: { proposal: (lease) => worker.executeLease(lease) },
+	});
 	return {
 		conversationId: created.conversationId,
 		controller: new ProposalWorkspaceApiController(

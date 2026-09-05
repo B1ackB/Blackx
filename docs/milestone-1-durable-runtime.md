@@ -1,7 +1,7 @@
 # M1：Durable Single-Agent Runtime
 
 状态：Scope Frozen / DeepSeek Online Gate Passed
-更新日期：2026-09-03
+更新日期：2026-09-04
 冻结日期：2026-09-03
 前置条件：M0 Agent Core 已冻结，相关 Contract、离线回归与 DeepSeek Online Contract 通过
 
@@ -91,7 +91,7 @@ M1 接受单机持久化实现：
 - Stage Job Queue：SQLite 单主机多 Worker Adapter
 - 测试：内存 Fake
 
-M1 不自研分布式数据库、共识协议、对象存储或消息队列。所有调用继续经过 Port，并保持幂等、乐观并发、租户键和可迁移 Schema，使 M3 可以替换为成熟的生产组件。
+M1 不自研分布式数据库、共识协议、对象存储或消息队列。所有调用继续经过 Port，并保持幂等、乐观并发、租户键和可迁移 Schema；本地 M3 继续验证迁移、备份和恢复，未来托管云达到升级条件时再替换为成熟服务。
 
 只有满足任一条件时才启动生产存储 Adapter：
 
@@ -125,14 +125,15 @@ M1 不自研分布式数据库、共识协议、对象存储或消息队列。�
 - 五个固定 Crash Injection 回归
 - 持久 `runtime-trace.v1`，包含脱敏 Agent/Model/Tool/Compact 事件、Usage、延迟和 Failure
 - Stage Job 持久恢复次数、过期 lease、检测延迟和租户范围汇总指标
-- 行业无关 `durable-research-runtime-v1` 离线与 DeepSeek Online Gate
-- 29 个测试文件、137 个测试、类型检查和生产构建通过
+- 行业无关 `durable-research-runtime-v1` 已真实贯通 Queue → Worker → Artifact Version → Evaluation → Approval → Stage Gate；固定 Job 重复投递仍只保留一个队列项
+- 既有 DeepSeek Online Runtime Gate 通过；2026-09-04 新增的完整企业链路已由离线集成测试验证
+- 30 个测试文件、139 个测试、类型检查和生产构建通过
 
 完整证据见 [`evidence/m1-durable-runtime-2026-09-03.md`](evidence/m1-durable-runtime-2026-09-03.md)。
 
 ## 9. 冻结后的限制
 
-- Provider 成功到本地 Trace/Checkpoint 写入之间仍有崩溃窗口；这阻塞生产级 exactly-once 声明，但不阻塞单机 M1。M3 必须取得 Provider 去重证据或采用生产事务型 Worker。
+- Provider 成功到本地 Trace/Checkpoint 写入之间仍有崩溃窗口；这阻塞 exactly-once 声明，但不阻塞单机 M1。M3 必须取得 Provider 去重或 Reconciliation 证据，不能靠重试掩盖窗口。
 - Operator Queue/DLQ 已有受保护 API；图形运维页面属于 M2 产品体验。
 - PostgreSQL、对象存储、多主机 Queue、Sub-agent、Agent Teams 和 RSI 不属于 M1。
 

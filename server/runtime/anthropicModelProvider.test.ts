@@ -25,7 +25,18 @@ describe("AnthropicModelProvider", () => {
 		const result = await provider.generate({
 			messages: [
 				{ role: "system", content: "stable policy" },
-				{ role: "user", content: "check" },
+				{
+					role: "user",
+					content: "check",
+					attachments: [{
+						type: "image",
+						name: "reference.png",
+						mediaType: "image/png",
+						sourceRef: "attachment://conversation-a/attachment-a",
+						sha256: "a".repeat(64),
+						data: "aW1hZ2U=",
+					}],
+				},
 			],
 			tools: [{ name: "lookup", description: "Read", inputSchema: { type: "object" } }],
 			reasoning: "disabled",
@@ -37,7 +48,13 @@ describe("AnthropicModelProvider", () => {
 			expect(body).toMatchObject({
 			model: "model-a",
 			thinking: { type: "disabled" },
-			messages: [{ role: "user", content: [{ type: "text", text: "check" }] }],
+			messages: [{ role: "user", content: [
+				{ type: "text", text: "check" },
+				{
+					type: "image",
+					source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" },
+				},
+			] }],
 			tools: [{ name: "lookup", input_schema: { type: "object" } }],
 		});
 		expect(body.system[0].text).toBe("stable policy");

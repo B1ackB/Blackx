@@ -51,6 +51,21 @@ function record(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function imageAttachments(value: unknown): boolean {
+	return value === undefined || Array.isArray(value) && value.every((attachment) => (
+		record(attachment) &&
+		attachment.type === "image" &&
+		typeof attachment.name === "string" &&
+		attachment.name.length > 0 &&
+		attachment.name.length <= 200 &&
+		["image/gif", "image/jpeg", "image/png", "image/webp"].includes(String(attachment.mediaType)) &&
+		typeof attachment.sourceRef === "string" &&
+		attachment.sourceRef.length > 0 &&
+		/^[a-f0-9]{64}$/.test(String(attachment.sha256)) &&
+		attachment.data === undefined
+	));
+}
+
 function messages(value: unknown): value is AgentMessage[] {
 	return Array.isArray(value) && value.every((message) => {
 		if (!record(message) || !["system", "user", "assistant", "tool"].includes(String(message.role))) return false;
@@ -60,6 +75,7 @@ function messages(value: unknown): value is AgentMessage[] {
 		if (message.pinned !== undefined && typeof message.pinned !== "boolean") return false;
 		if (message.durable !== undefined && typeof message.durable !== "boolean") return false;
 		if (message.toolCallId !== undefined && typeof message.toolCallId !== "string") return false;
+		if (!imageAttachments(message.attachments)) return false;
 		return message.toolCalls === undefined || (
 			Array.isArray(message.toolCalls) && message.toolCalls.every((call) => (
 				record(call) && typeof call.id === "string" && typeof call.name === "string" && "input" in call

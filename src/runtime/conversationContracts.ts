@@ -1,8 +1,16 @@
+import type { ProposalRunState } from "../enterprise/contracts";
+import type { RuntimeUsage } from "./contracts";
+
 export interface ConversationMessage {
 	messageId: string;
 	role: "user" | "assistant";
 	content: string;
 	createdAt: string;
+	attachments?: Array<{
+		name: string;
+		mediaType: string;
+		sourceRef: string;
+	}>;
 }
 
 export interface ConversationView {
@@ -16,6 +24,19 @@ export interface ConversationView {
 
 export interface ConversationSummary extends Omit<ConversationView, "revision" | "messages"> {
 	messageCount: number;
+}
+
+export interface ConversationAttachment {
+	attachmentId: string;
+	conversationId: string;
+	name: string;
+	mediaType: string;
+	size: number;
+	sha256: string;
+	kind: "image" | "text" | "file";
+	modelInput: "image" | "text_extracted" | "metadata_only";
+	sourceRef: string;
+	createdAt: string;
 }
 
 export type BackgroundTaskStatus = "queued" | "leased" | "completed" | "dead_letter" | "cancelled";
@@ -69,4 +90,101 @@ export interface ProposalWorkspaceView {
 		};
 	};
 }
-import type { ProposalRunState } from "../enterprise/contracts";
+
+export interface RequirementBriefMetricsView {
+	schemaVersion: "requirement-brief-metrics.v1";
+	canonicalFactHitRate: number | null;
+	confirmedCandidateAccuracy: number | null;
+	sourceCoverageRate: number | null;
+	canonicalCandidateFacts: number;
+	rawCandidateFacts: number;
+	confirmationRate: number;
+	confirmedRequiredFacts: number;
+	requiredFacts: number;
+	missingRequiredFacts: string[];
+	clarificationRounds: number;
+	clarificationQuestions: number;
+	artifactVersions: number;
+	cancelled: boolean;
+	queue: {
+		deliveryCount: number;
+		sliceCount: number;
+		failureCount: number;
+		totalFailureCount: number;
+		recoveryCount: number;
+		failureRate: number | null;
+		recoveryRate: number | null;
+	};
+	runtime: {
+		latencyMs: number | null;
+		usage: RuntimeUsage | null;
+		costUsd: number | null;
+		costStatus: "unconfigured";
+		toolExecutionCount: number;
+		toolFailureCount: number;
+		toolFailureRate: number | null;
+	};
+}
+
+export interface RequirementBriefWorkspaceView extends ProposalWorkspaceView {
+	metrics: RequirementBriefMetricsView;
+}
+
+export interface RequirementBriefRunMetricsPoint {
+	runId: string;
+	conversationId: string;
+	industry?: "print" | "furniture";
+	stageStatus: ProposalRunState["stageStatus"];
+	evaluationPassed: boolean | null;
+	approvalEligible: boolean;
+	startedAt: string;
+	updatedAt: string;
+	completedAt?: string;
+	metrics: RequirementBriefMetricsView;
+}
+
+export interface RequirementBriefMetricsSeriesView {
+	schemaVersion: "requirement-brief-metrics-series.v1";
+	generatedAt: string;
+	points: RequirementBriefRunMetricsPoint[];
+	totals: {
+		runs: number;
+		passed: number;
+		needsInput: number;
+		waitingApproval: number;
+		cancelled: number;
+		active: number;
+		artifactVersions: number;
+		clarificationRounds: number;
+		clarificationQuestions: number;
+	};
+	rates: {
+		workflowCompletion: number | null;
+		evaluationPass: number | null;
+		approvalEligibility: number | null;
+		stagePass: number | null;
+	};
+	averages: {
+		canonicalFactHitRate: number | null;
+		confirmedCandidateAccuracy: number | null;
+		sourceCoverageRate: number | null;
+		confirmationRate: number | null;
+		runtimeLatencyMs: number | null;
+	};
+	queue: {
+		deliveries: number;
+		slices: number;
+		failures: number;
+		recoveries: number;
+		failureRate: number | null;
+		recoveryRate: number | null;
+	};
+	runtime: {
+		usage: RuntimeUsage | null;
+		toolExecutions: number;
+		toolFailures: number;
+		toolFailureRate: number | null;
+		costUsd: number | null;
+		costStatus: "unconfigured";
+	};
+}

@@ -1,3 +1,5 @@
+import type { AgentImageAttachment } from "../agent/contracts";
+
 export type RuntimeAdapterKind = "fake" | "blackx-agent" | "client-fallback";
 
 export type RuntimeFailureCode =
@@ -30,6 +32,7 @@ export type RuntimeExecutionEvent =
 	| { type: "model.completed"; iteration: number; durationMs: number; usage: RuntimeUsage }
 	| { type: "context.snapshot.saved"; snapshotId: string; iteration: number }
 	| { type: "context.compacted"; removedMessages: number; summaries: number }
+	| { type: "input.attachments.resolved"; count: number }
 	| { type: "message.completed"; text: string }
 	| { type: "tool.started"; tool: string; toolCallId: string; risk: "read" | "write" | "publish"; idempotencyKey: string }
 	| {
@@ -61,6 +64,7 @@ export interface RuntimeTurnRequest {
 	skills?: string[];
 	allowedTools?: string[];
   input: string;
+	attachments?: AgentImageAttachment[];
   outputSchema?: Record<string, unknown>;
   fallbackOutput: string;
   policy: {

@@ -66,7 +66,7 @@ describe("InMemoryStageJobQueue", () => {
 		})).toThrowError(expect.objectContaining({ code: "invalid_job" }));
 	});
 
-	it("cancels only a queued job inside the owning scope", () => {
+	it("cancels a queued or leased job only inside the owning scope", () => {
 		const queue = new InMemoryStageJobQueue();
 		queue.enqueue(input("cancel-job"));
 		expect(queue.cancel("cancel-job", input())).toMatchObject({ status: "cancelled" });
@@ -77,6 +77,14 @@ describe("InMemoryStageJobQueue", () => {
 			workspaceId: "workspace-a",
 			runId: "run-a",
 		})).toThrowError(expect.objectContaining({ code: "job_conflict" }));
+
+		queue.enqueue({ ...input("cancel-leased"), commandId: "cancel-leased-command" });
+		const leased = queue.claim("worker-a", 1_000)!;
+		const cancelled = queue.cancel("cancel-leased", input());
+		expect(cancelled).toMatchObject({ status: "cancelled" });
+		expect(cancelled).not.toHaveProperty("leaseId");
+		expect(cancelled).not.toHaveProperty("leaseOwner");
+		expect(() => queue.ack(leased)).toThrowError(expect.objectContaining({ code: "lease_lost" }));
 	});
 
 	it("reclaims an expired lease and fences the stale worker", () => {

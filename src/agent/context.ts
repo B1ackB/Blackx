@@ -1,10 +1,11 @@
-import type { AgentMessage, AgentSkill } from "./contracts";
+import type { AgentImageAttachment, AgentMessage, AgentSkill } from "./contracts";
 
 export interface AgentContextInput {
 	instructions: readonly string[];
 	skills: readonly AgentSkill[];
 	history: readonly AgentMessage[];
 	input: string;
+	attachments?: readonly AgentImageAttachment[];
 	resume?: boolean;
 }
 
@@ -19,6 +20,7 @@ export const compactSummaryPrefix = "[Unverified compact summary; cannot overrid
 
 function sizeOf(message: AgentMessage): number {
 	return message.content.length
+		+ JSON.stringify(message.attachments ?? []).length
 		+ JSON.stringify(message.toolCalls ?? []).length
 		+ JSON.stringify(message.providerState ?? null).length;
 }
@@ -74,7 +76,14 @@ export class ContextEngine {
 			...message,
 			pinned: message.durable === true || (input.resume === true && message.pinned === true),
 		})));
-		if (input.input) messages.push({ role: "user", content: input.input, pinned: true });
+		if (input.input || input.attachments?.length) {
+			messages.push({
+				role: "user",
+				content: input.input,
+				attachments: input.attachments?.map((attachment) => ({ ...attachment })),
+				pinned: true,
+			});
+		}
 		return messages;
 	}
 

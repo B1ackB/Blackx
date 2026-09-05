@@ -9,14 +9,17 @@ export type RunStatus =
 	| "running"
 	| "waiting_approval"
 	| "revision_required"
+	| "cancelled"
 	| "completed";
 
 export type StageStatus =
 	| "pending"
 	| "running"
 	| "evaluating"
+	| "needs_input"
 	| "waiting_approval"
 	| "revision_required"
+	| "cancelled"
 	| "passed"
 	| "retryable_failed";
 
@@ -30,6 +33,7 @@ export type FactStatus = "suggested" | "unverified" | "verified" | "rejected";
 
 export type FactSourceType =
 	| "user_input"
+	| "source_document"
 	| "model_output"
 	| "enterprise_source"
 	| "human_confirmation";
@@ -88,8 +92,8 @@ export interface ProposalRunState extends AggregateScope {
 
 export type EnterpriseEventData =
 	| { type: "run.created" }
-	| { type: "stage.started"; stage: "proposal" }
-	| { type: "stage.execution_requested"; stage: "proposal"; jobId: string }
+	| { type: "stage.started"; stage: string }
+	| { type: "stage.execution_requested"; stage: string; jobId: string }
 	| {
 			type: "fact.version_recorded";
 			factKey: string;
@@ -149,9 +153,11 @@ export type EnterpriseEventData =
 			artifactId: string;
 			artifactVersion: number;
 		}
-	| { type: "stage.revision_required"; stage: "proposal" }
-	| { type: "stage.restarted"; stage: "proposal" }
-	| { type: "stage.completed"; stage: "proposal" };
+	| { type: "stage.input_required"; stage: string }
+	| { type: "stage.revision_required"; stage: string }
+	| { type: "stage.restarted"; stage: string }
+	| { type: "stage.cancelled"; stage: string }
+	| { type: "stage.completed"; stage: string };
 
 export interface EnterpriseEvent extends AggregateScope {
 	eventId: string;

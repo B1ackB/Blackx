@@ -3,6 +3,7 @@ import { ArtifactStoreError } from "../../src/enterprise/artifactStore";
 import type { AggregateScope, ProposalRunState } from "../../src/enterprise/contracts";
 import { EnterpriseKernelError } from "../../src/enterprise/contracts";
 import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
+import type { StageJobLease } from "../../src/enterprise/stageJobQueue";
 import {
 	createDeterministicProposal,
 	evaluateSolutionProposal,
@@ -100,9 +101,25 @@ export class ProposalWorker {
 		return result.state;
 	}
 
+	executeLease(lease: StageJobLease, signal?: AbortSignal): Promise<ProposalWorkerSliceResult> {
+		return this.executeSlice(
+			{
+				tenantId: lease.tenantId,
+				workspaceId: lease.workspaceId,
+				runId: lease.runId,
+				commandId: lease.commandId,
+				correlationId: lease.correlationId,
+				expectedVersion: lease.expectedVersion,
+			},
+			{ sessionId: lease.sessionId, resume: "if-present" },
+			signal,
+		);
+	}
+
 	async executeSlice(
 		command: ProposalWorkerCommand,
 		continuation?: ProposalWorkerContinuation,
+		signal?: AbortSignal,
 	): Promise<ProposalWorkerSliceResult> {
 		let state = this.engine.load(command);
 		const runtimeCommandId = `${command.commandId}:runtime`;
@@ -195,7 +212,7 @@ export class ProposalWorker {
 					approvalPolicy: "never",
 					timeoutMs: 120_000,
 				},
-			});
+			}, signal);
 			if (!result.contextSnapshotId) {
 				throw new ArtifactStoreError(
 					"artifact_store_unavailable",

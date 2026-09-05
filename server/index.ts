@@ -18,6 +18,10 @@ import {
 	createAutomationTools,
 } from "./runtime/automationTools";
 import { ConversationApiController } from "./runtime/conversationApi";
+import {
+	ConversationAttachmentError,
+	FileConversationAttachmentStore,
+} from "./runtime/conversationAttachments";
 import { FileArtifactContentStore } from "./artifacts/fileArtifactStore";
 import { ProposalWorker } from "./workers/proposalWorker";
 import { ProposalWorkerApiController } from "./workers/proposalWorkerApi";
@@ -29,6 +33,9 @@ import { CronDispatcher } from "./workers/cronScheduler";
 import { CronApiController } from "./workers/cronApi";
 import { ProposalWorkspaceApiController } from "./enterprise/proposalWorkspaceApi";
 import { researchSourceTool } from "./runtime/researchTools";
+import { createProjectSourceReadTool } from "./runtime/requirementTools";
+import { RequirementBriefWorker } from "./manufacturing/requirementBriefWorker";
+import { RequirementBriefWorkspaceApiController } from "./manufacturing/requirementBriefApi";
 
 const port = Number(process.env.BLACKX_PORT ?? 5173);
 const eventStore = new FileEnterpriseEventStore(
@@ -38,6 +45,7 @@ const eventStore = new FileEnterpriseEventStore(
 	),
 );
 const proposalEngine = new ProposalRunEngine(eventStore);
+const requirementBriefEngine = new ProposalRunEngine(eventStore, "requirement-brief");
 const proposalApi = new ProposalApiController(
 	proposalEngine,
 	process.env.BLACKX_COMMAND_API_TOKEN,
@@ -58,13 +66,29 @@ const stageJobQueue = sqliteStageJobQueue ?? new FileStageJobQueue(
 const cronScheduleStore = new FileCronScheduleStore(
 	resolve(process.env.BLACKX_CRON_SCHEDULE_PATH ?? ".blackx-data/cron-schedules.json"),
 );
+const conversationAttachments = new FileConversationAttachmentStore(
+	resolve(process.env.BLACKX_ATTACHMENT_STORE_PATH ?? ".blackx-data/attachments"),
+);
 const services = createRuntime(process.env, {
-	tools: [...createAutomationTools(stageJobQueue, cronScheduleStore), researchSourceTool],
+	tools: [
+		...createAutomationTools(stageJobQueue, cronScheduleStore),
+		researchSourceTool,
+		createProjectSourceReadTool(requirementBriefEngine, conversationAttachments),
+	],
 	autonomouslyApprovedTools: automationWriteToolNames,
+	resolveImageAttachment: async (scope, attachment) => conversationAttachments.resolveImage(scope, attachment),
 });
 const { runtime, state: agentState } = services;
-const conversationApi = new ConversationApiController(runtime, agentState, undefined, undefined, automationToolNames);
+const conversationApi = new ConversationApiController(
+	runtime,
+	agentState,
+	undefined,
+	undefined,
+	automationToolNames,
+	conversationAttachments,
+);
 const stageJobOutbox = new StageJobOutbox(proposalEngine, eventStore, stageJobQueue);
+const requirementBriefOutbox = new StageJobOutbox(requirementBriefEngine, eventStore, stageJobQueue);
 const cronDispatcher = new CronDispatcher(cronScheduleStore, stageJobQueue);
 const backgroundConversationWorker = new BackgroundConversationWorker(conversationApi);
 const artifactStore = new FileArtifactContentStore(
@@ -73,22 +97,31 @@ const artifactStore = new FileArtifactContentStore(
 			".blackx-data/artifacts",
 	),
 );
+const proposalWorker = new ProposalWorker(
+	proposalEngine,
+	runtime,
+	artifactStore,
+);
+const requirementBriefWorker = new RequirementBriefWorker(
+	requirementBriefEngine,
+	runtime,
+	artifactStore,
+	conversationAttachments,
+);
 const stageJobScheduler = new StageJobScheduler(
 	stageJobQueue,
-	new ProposalWorker(
-		proposalEngine,
-		runtime,
-		artifactStore,
-	),
 	{
 		workerId: process.env.BLACKX_WORKER_ID ?? `local-${process.pid}`,
 		leaseMs: Number(process.env.BLACKX_WORKER_LEASE_MS ?? 135_000),
 		pollIntervalMs: Number(process.env.BLACKX_WORKER_POLL_MS ?? 250),
 		handlers: {
+			proposal: (lease, signal) => proposalWorker.executeLease(lease, signal),
+			"requirement-brief": (lease, signal) => requirementBriefWorker.executeLease(lease, signal),
 			"conversation-background": (lease) => backgroundConversationWorker.execute(lease),
 		},
 		dispatchOutbox: () => {
 			stageJobOutbox.dispatchOne();
+			requirementBriefOutbox.dispatchOne();
 			cronDispatcher.dispatchDue();
 		},
 		onError: (error) => {
@@ -105,6 +138,14 @@ const proposalWorkspaceApi = new ProposalWorkspaceApiController(
 	artifactStore,
 	stageJobOutbox,
 	stageJobScheduler,
+);
+const requirementBriefWorkspaceApi = new RequirementBriefWorkspaceApiController(
+	conversationApi,
+	requirementBriefEngine,
+	artifactStore,
+	requirementBriefOutbox,
+	stageJobScheduler,
+	conversationAttachments,
 );
 const proposalWorkerApi = new ProposalWorkerApiController(
 	stageJobScheduler,
@@ -126,16 +167,20 @@ function json(response: ServerResponse, status: number, payload: unknown): void 
   response.end(JSON.stringify(payload));
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+async function readBody(request: IncomingMessage, maxBytes = 256_000): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.byteLength;
-    if (size > 256_000) throw new Error("request_too_large");
+    if (size > maxBytes) throw new Error("request_too_large");
     chunks.push(buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks);
+}
+
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  return JSON.parse((await readBody(request)).toString("utf8"));
 }
 
 function isTurnRequest(value: unknown): value is RuntimeTurnRequest {
@@ -165,6 +210,23 @@ function isTurnRequest(value: unknown): value is RuntimeTurnRequest {
 		)) &&
 		(candidate.allowedTools === undefined || (
 			Array.isArray(candidate.allowedTools) && candidate.allowedTools.every((value) => typeof value === "string")
+		)) &&
+		(candidate.attachments === undefined || (
+			Array.isArray(candidate.attachments) &&
+			candidate.attachments.length <= 8 &&
+			candidate.attachments.every((attachment) =>
+				Boolean(attachment) &&
+				typeof attachment === "object" &&
+				!Array.isArray(attachment) &&
+				(attachment as { type?: unknown }).type === "image" &&
+				typeof (attachment as { name?: unknown }).name === "string" &&
+				["image/gif", "image/jpeg", "image/png", "image/webp"].includes(
+					String((attachment as { mediaType?: unknown }).mediaType),
+				) &&
+				typeof (attachment as { sourceRef?: unknown }).sourceRef === "string" &&
+				/^[a-f0-9]{64}$/.test(String((attachment as { sha256?: unknown }).sha256)) &&
+				(attachment as { data?: unknown }).data === undefined
+			)
 		))
   );
 }
@@ -282,6 +344,103 @@ const server = createServer(async (request, response) => {
 		}
 	}
 
+	if (request.method === "GET" && url.pathname === "/api/requirement-brief/metrics") {
+		const result = requirementBriefWorkspaceApi.metricsSeries(conversationApiContext(request));
+		json(response, result.status, result.body);
+		return;
+	}
+
+	const attachmentContentMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/attachments\/([^/]+)\/content$/,
+	);
+	if (request.method === "GET" && attachmentContentMatch) {
+		const context = conversationApiContext(request);
+		let conversationId: string;
+		let attachmentId: string;
+		try {
+			conversationId = decodeURIComponent(attachmentContentMatch[1]);
+			attachmentId = decodeURIComponent(attachmentContentMatch[2]);
+		} catch {
+			json(response, 400, { code: "invalid_attachment" });
+			return;
+		}
+		const access = conversationApi.get(context, conversationId);
+		if (access.status !== 200) {
+			json(response, access.status, access.body);
+			return;
+		}
+		try {
+			const stored = conversationAttachments.read({
+				tenantId: context.tenantId!,
+				workspaceId: context.workspaceId!,
+				conversationId,
+			}, attachmentId);
+			response.writeHead(200, {
+				"content-type": stored.attachment.mediaType,
+				"content-length": stored.content.byteLength,
+				"content-disposition": `${stored.attachment.kind === "image" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.attachment.name)}`,
+				"cache-control": "private, no-store",
+				"x-content-type-options": "nosniff",
+			});
+			response.end(stored.content);
+		} catch (error) {
+			const known = error instanceof ConversationAttachmentError ? error : undefined;
+			json(response, known?.code === "attachment_not_found" ? 404 : 503, {
+				code: known?.code ?? "attachment_store_unavailable",
+				message: known?.message,
+			});
+		}
+		return;
+	}
+
+	const conversationAttachmentsMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/attachments$/,
+	);
+	if (conversationAttachmentsMatch && (request.method === "GET" || request.method === "POST")) {
+		const context = conversationApiContext(request);
+		let conversationId: string;
+		try {
+			conversationId = decodeURIComponent(conversationAttachmentsMatch[1]);
+		} catch {
+			json(response, 400, { code: "invalid_attachment" });
+			return;
+		}
+		const access = conversationApi.get(context, conversationId);
+		if (access.status !== 200) {
+			json(response, access.status, access.body);
+			return;
+		}
+		const attachmentScope = {
+			tenantId: context.tenantId!,
+			workspaceId: context.workspaceId!,
+			conversationId,
+		};
+		try {
+			if (request.method === "GET") {
+				json(response, 200, { attachments: conversationAttachments.list(attachmentScope) });
+				return;
+			}
+			const result = conversationAttachments.put(attachmentScope, {
+				requestId: url.searchParams.get("requestId") ?? "",
+				name: url.searchParams.get("name") ?? "",
+				mediaType: header(request, "content-type") ?? "application/octet-stream",
+				content: await readBody(request, 10 * 1024 * 1024),
+			});
+			json(response, result.duplicate ? 200 : 201, result);
+		} catch (error) {
+			if (error instanceof Error && error.message === "request_too_large") {
+				json(response, 413, { code: "request_too_large", message: "附件不能超过 10 MB" });
+				return;
+			}
+			const known = error instanceof ConversationAttachmentError ? error : undefined;
+			json(response, known?.code === "attachment_conflict" ? 409 : known?.code === "invalid_attachment" ? 400 : 503, {
+				code: known?.code ?? "attachment_store_unavailable",
+				message: known?.message,
+			});
+		}
+		return;
+	}
+
 	const conversationBackgroundTaskMatch = url.pathname.match(
 		/^\/api\/conversations\/([^/]+)\/background-tasks$/,
 	);
@@ -373,6 +532,114 @@ const server = createServer(async (request, response) => {
 		}
 		const result = conversationApi.traces(conversationApiContext(request), conversationId);
 		json(response, result.status, result.body);
+		return;
+	}
+
+	const requirementApprovalMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/requirement-brief\/approval$/,
+	);
+	const requirementCancelMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/requirement-brief\/cancel$/,
+	);
+	if (request.method === "POST" && requirementCancelMatch) {
+		try {
+			const result = requirementBriefWorkspaceApi.cancel(
+				conversationApiContext(request),
+				decodeURIComponent(requirementCancelMatch[1]),
+				await readJson(request),
+			);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
+		return;
+	}
+	const requirementFactDecisionMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/requirement-brief\/facts\/([^/]+)\/decision$/,
+	);
+	if (request.method === "POST" && requirementFactDecisionMatch) {
+		try {
+			const result = requirementBriefWorkspaceApi.resolveFact(
+				conversationApiContext(request),
+				decodeURIComponent(requirementFactDecisionMatch[1]),
+				decodeURIComponent(requirementFactDecisionMatch[2]),
+				await readJson(request),
+			);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
+		return;
+	}
+
+	const requirementFactsMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/requirement-brief\/facts$/,
+	);
+	if (request.method === "POST" && requirementFactsMatch) {
+		try {
+			const result = requirementBriefWorkspaceApi.recordFact(
+				conversationApiContext(request),
+				decodeURIComponent(requirementFactsMatch[1]),
+				await readJson(request),
+			);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
+		return;
+	}
+
+	if (request.method === "POST" && requirementApprovalMatch) {
+		try {
+			const result = requirementBriefWorkspaceApi.resolveApproval(
+				conversationApiContext(request),
+				decodeURIComponent(requirementApprovalMatch[1]),
+				await readJson(request),
+			);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
+		return;
+	}
+
+	const conversationRequirementMatch = url.pathname.match(
+		/^\/api\/conversations\/([^/]+)\/requirement-brief$/,
+	);
+	if (conversationRequirementMatch && (request.method === "GET" || request.method === "POST")) {
+		try {
+			const conversationId = decodeURIComponent(conversationRequirementMatch[1]);
+			const result = request.method === "GET"
+				? requirementBriefWorkspaceApi.get(conversationApiContext(request), conversationId)
+				: requirementBriefWorkspaceApi.start(
+					conversationApiContext(request),
+					conversationId,
+					await readJson(request),
+				);
+			json(response, result.status, result.body);
+		} catch (error) {
+			json(response, 400, {
+				code: error instanceof Error && error.message === "request_too_large"
+					? "request_too_large"
+					: "invalid_json",
+			});
+		}
 		return;
 	}
 

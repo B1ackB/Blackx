@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import type { ArtifactContentStore } from "../../src/enterprise/artifactStore";
 import { ArtifactStoreError } from "../../src/enterprise/artifactStore";
-import type { AggregateScope, ProposalRunState } from "../../src/enterprise/contracts";
+import type {
+	AggregateScope,
+	FactSourceType,
+	FactStatus,
+	ProposalRunState,
+} from "../../src/enterprise/contracts";
 import { EnterpriseKernelError } from "../../src/enterprise/contracts";
 import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
 import { StageJobQueueError } from "../../src/enterprise/stageJobQueue";
@@ -17,7 +22,7 @@ import { ConversationApiController } from "../runtime/conversationApi";
 import { StageJobOutbox } from "../workers/stageJobOutbox";
 import { StageJobScheduler } from "../workers/stageJobScheduler";
 
-class ProposalWorkspaceValidationError extends Error {}
+export class ProposalWorkspaceValidationError extends Error {}
 
 class ConversationAccessError extends Error {
 	constructor(readonly response: ConversationApiResponse) {
@@ -95,21 +100,61 @@ function sameFact(
 		left.status === right.status;
 }
 
-function runId(scope: Omit<AggregateScope, "runId">, conversationId: string): string {
+export interface ArtifactWorkspaceStartFact {
+	key: string;
+	value: string | number | boolean;
+	unit?: string;
+	status: FactStatus;
+	sourceType: FactSourceType;
+	sourceRef: string;
+}
+
+export interface ArtifactWorkspaceOptions {
+	responseKey: string;
+	requestErrorCode: string;
+	failureCode: string;
+	runPrefix: string;
+	stageId: string;
+	jobPrefix: string;
+	evaluationArtifactId: string;
+	protectedFactKeys?: readonly string[];
+	startFacts?: (
+		payload: unknown,
+		conversation: ConversationView,
+		scope: AggregateScope,
+	) => ArtifactWorkspaceStartFact[];
+}
+
+const proposalWorkspaceOptions: ArtifactWorkspaceOptions = {
+	responseKey: "proposal",
+	requestErrorCode: "invalid_proposal_request",
+	failureCode: "proposal_workspace_failed",
+	runPrefix: "proposal",
+	stageId: "proposal",
+	jobPrefix: "proposal",
+	evaluationArtifactId: "proposal-evaluation",
+};
+
+function runId(
+	scope: Omit<AggregateScope, "runId">,
+	conversationId: string,
+	prefix: string,
+): string {
 	const digest = createHash("sha256")
 		.update(`${scope.tenantId}\u0000${scope.workspaceId}\u0000${conversationId}`)
 		.digest("hex")
 		.slice(0, 32);
-	return `proposal-${digest}`;
+	return `${prefix}-${digest}`;
 }
 
 export class ProposalWorkspaceApiController {
 	constructor(
-		private readonly conversations: ConversationApiController,
+		protected readonly conversations: ConversationApiController,
 		private readonly engine: ProposalRunEngine,
 		private readonly artifacts: ArtifactContentStore,
 		private readonly outbox: StageJobOutbox,
 		private readonly scheduler: StageJobScheduler,
+		private readonly options: ArtifactWorkspaceOptions = proposalWorkspaceOptions,
 	) {}
 
 	get(context: ConversationApiContext, conversationId: unknown): ConversationApiResponse {
@@ -118,7 +163,7 @@ export class ProposalWorkspaceApiController {
 			const state = this.engine.load(scope);
 			return {
 				status: 200,
-				body: { proposal: state.aggregateVersion === 0 ? null : this.view(state) },
+				body: this.body(state.aggregateVersion === 0 ? null : this.view(state)),
 			};
 		});
 	}
@@ -140,7 +185,8 @@ export class ProposalWorkspaceApiController {
 			if (brief.length > 32_000) {
 				throw new ProposalWorkspaceValidationError("Conversation brief is too large");
 			}
-			const correlationId = `${id}:proposal`;
+			const extraStartFacts = this.options.startFacts?.(payload, conversation, scope) ?? [];
+			const correlationId = `${id}:${this.options.stageId}`;
 			let state = this.engine.load(scope);
 			if (state.aggregateVersion === 0) {
 				state = this.engine.create({
@@ -161,32 +207,51 @@ export class ProposalWorkspaceApiController {
 				});
 			}
 
-			const factCommandId = `${id}:fact`;
 			const sourceRef = `conversation:${conversation.conversationId}:revision:${conversation.revision}`;
-			if (this.engine.hasCommand(scope, factCommandId)) {
-				const existing = state.facts.customer_brief;
-				if (existing?.value !== brief || existing.sourceRef !== sourceRef) {
-					throw new EnterpriseKernelError(
-						"concurrency_conflict",
-						"requestId is already bound to another Conversation snapshot",
-					);
+			const startFacts = [
+				{
+					key: "customer_brief",
+					value: brief,
+					status: "unverified" as const,
+					sourceType: "user_input" as const,
+					sourceRef,
+				},
+				...extraStartFacts,
+			];
+			for (const fact of startFacts) {
+				const factCommandId = `${id}:fact:${fact.key}`;
+				const existing = state.facts[fact.key];
+				if (this.engine.hasCommand(scope, factCommandId)) {
+					if (!existing || !sameFact(existing, fact) || existing.sourceRef !== fact.sourceRef) {
+						throw new EnterpriseKernelError(
+							"concurrency_conflict",
+							"requestId is already bound to another Workspace snapshot",
+						);
+					}
+					continue;
 				}
-			} else {
+				if (existing && sameFact(existing, fact) && existing.sourceRef === fact.sourceRef) continue;
 				state = this.engine.recordFactVersion({
 					...scope,
 					actorId,
 					commandId: factCommandId,
 					correlationId,
 					expectedVersion: state.aggregateVersion,
-					factKey: "customer_brief",
-					factVersion: (state.factVersions.customer_brief ?? 0) + 1,
-					value: brief,
-					status: "unverified",
-					sourceType: "user_input",
-					sourceRef,
+					factKey: fact.key,
+					factVersion: (state.factVersions[fact.key] ?? 0) + 1,
+					value: fact.value,
+					unit: fact.unit,
+					status: fact.status,
+					sourceType: fact.sourceType,
+					sourceRef: fact.sourceRef,
 				});
 			}
-			if (state.stageStatus === "revision_required" || state.stageStatus === "retryable_failed") {
+			if (
+				state.stageStatus === "needs_input" ||
+				state.stageStatus === "revision_required" ||
+				state.stageStatus === "retryable_failed" ||
+				state.stageStatus === "cancelled"
+			) {
 				state = this.engine.restartProposal({
 					...scope,
 					actorId,
@@ -203,14 +268,14 @@ export class ProposalWorkspaceApiController {
 					"Proposal cannot start from the current state",
 				);
 			}
-			this.outbox.requestProposal({
+			this.requestJob({
 				...scope,
 				commandId: workerCommandId,
 				correlationId,
 				expectedVersion: state.aggregateVersion,
 			});
 			this.outbox.dispatchOne();
-			return { status: 202, body: { proposal: this.view(this.engine.load(scope)) } };
+			return { status: 202, body: this.body(this.view(this.engine.load(scope))) };
 		});
 	}
 
@@ -251,7 +316,7 @@ export class ProposalWorkspaceApiController {
 				});
 			}
 			if (selectedDecision === "approved") {
-				this.outbox.requestProposal({
+				this.requestJob({
 					...scope,
 					commandId: `${id}:gate`,
 					correlationId: `${id}:proposal-approval`,
@@ -259,7 +324,37 @@ export class ProposalWorkspaceApiController {
 				});
 				this.outbox.dispatchOne();
 			}
-			return { status: 202, body: { proposal: this.view(this.engine.load(scope)) } };
+			return { status: 202, body: this.body(this.view(this.engine.load(scope))) };
+		});
+	}
+
+	cancel(
+		context: ConversationApiContext,
+		conversationId: unknown,
+		payload: unknown,
+	): ConversationApiResponse {
+		return this.respond(() => {
+			const id = requestId(payload);
+			const { scope } = this.target(context, conversationId);
+			const actorId = requiredId(context.actorId, "actorId");
+			const commandId = `${id}:cancel`;
+			let state = this.engine.load(scope);
+			if (!this.engine.hasCommand(scope, commandId)) {
+				state = this.engine.cancelStage({
+					...scope,
+					actorId,
+					commandId,
+					correlationId: `${id}:${this.options.stageId}-cancel`,
+					expectedVersion: state.aggregateVersion,
+				});
+			}
+			if (state.lastJobId) {
+				const job = this.scheduler.getJob(state.lastJobId, scope);
+				if (job?.status === "queued" || job?.status === "leased") {
+					this.scheduler.cancel(state.lastJobId, scope);
+				}
+			}
+			return { status: 200, body: this.body(this.view(this.engine.load(scope))) };
 		});
 	}
 
@@ -274,6 +369,9 @@ export class ProposalWorkspaceApiController {
 				throw new ProposalWorkspaceValidationError("Request payload must be an object");
 			}
 			const factKey = requiredId(payload.key, "factKey", 64);
+			if (this.options.protectedFactKeys?.includes(factKey)) {
+				throw new ProposalWorkspaceValidationError(`${factKey} is managed by the Intake source`);
+			}
 			const value = factValue(payload);
 			const unit = factUnit(payload);
 			const { scope, conversation } = this.target(context, conversationId);
@@ -307,7 +405,7 @@ export class ProposalWorkspaceApiController {
 						sourceType: "user_input",
 						sourceRef: `conversation:${conversation.conversationId}:fact-form:${id}`,
 					});
-			return { status: 200, body: { proposal: this.view(next) } };
+			return { status: 200, body: this.body(this.view(next)) };
 		});
 	}
 
@@ -321,6 +419,9 @@ export class ProposalWorkspaceApiController {
 			const id = requestId(payload);
 			const selectedDecision = factDecision(payload);
 			const factKey = requiredId(factKeyValue, "factKey", 64);
+			if (this.options.protectedFactKeys?.includes(factKey)) {
+				throw new ProposalWorkspaceValidationError(`${factKey} is managed by the Intake source`);
+			}
 			const { scope, conversation } = this.target(context, conversationId);
 			const actorId = requiredId(context.actorId, "actorId");
 			const state = this.engine.load(scope);
@@ -348,11 +449,11 @@ export class ProposalWorkspaceApiController {
 						decision: selectedDecision,
 						sourceRef: `conversation:${conversation.conversationId}:fact-decision:${id}`,
 					});
-			return { status: 200, body: { proposal: this.view(next) } };
+			return { status: 200, body: this.body(this.view(next)) };
 		});
 	}
 
-	private target(
+	protected target(
 		context: ConversationApiContext,
 		conversationIdValue: unknown,
 	): { scope: AggregateScope; conversation: ConversationView } {
@@ -367,12 +468,12 @@ export class ProposalWorkspaceApiController {
 			scope: {
 				tenantId,
 				workspaceId,
-				runId: runId({ tenantId, workspaceId }, conversationId),
+				runId: runId({ tenantId, workspaceId }, conversationId, this.options.runPrefix),
 			},
 		};
 	}
 
-	private view(state: ProposalRunState): ProposalWorkspaceView {
+	protected view(state: ProposalRunState): ProposalWorkspaceView {
 		const artifact = state.currentProposal
 			? {
 				content: this.artifacts.readJson({
@@ -386,7 +487,7 @@ export class ProposalWorkspaceApiController {
 			? {
 				report: this.artifacts.readJson({
 					...state,
-					artifactId: "proposal-evaluation",
+					artifactId: this.options.evaluationArtifactId,
 					artifactVersion: state.evaluation.artifactVersion,
 				}),
 			}
@@ -411,13 +512,24 @@ export class ProposalWorkspaceApiController {
 		};
 	}
 
-	private respond(operation: () => ConversationApiResponse): ConversationApiResponse {
+	private requestJob(command: Parameters<StageJobOutbox["requestProposal"]>[0]): void {
+		this.outbox.requestStage(command, {
+			stageId: this.options.stageId,
+			jobPrefix: this.options.jobPrefix,
+		});
+	}
+
+	private body(value: ProposalWorkspaceView | null): Record<string, unknown> {
+		return { [this.options.responseKey]: value };
+	}
+
+	protected respond(operation: () => ConversationApiResponse): ConversationApiResponse {
 		try {
 			return operation();
 		} catch (error) {
 			if (error instanceof ConversationAccessError) return error.response;
 			if (error instanceof ProposalWorkspaceValidationError) {
-				return { status: 400, body: { code: "invalid_proposal_request", message: error.message } };
+				return { status: 400, body: { code: this.options.requestErrorCode, message: error.message } };
 			}
 			if (error instanceof EnterpriseKernelError) {
 				const status = error.code === "aggregate_access_denied"
@@ -438,7 +550,7 @@ export class ProposalWorkspaceApiController {
 					body: { code: error.code, message: error.message },
 				};
 			}
-			return { status: 500, body: { code: "proposal_workspace_failed" } };
+			return { status: 500, body: { code: this.options.failureCode } };
 		}
 	}
 }
