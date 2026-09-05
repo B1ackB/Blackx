@@ -1,6 +1,6 @@
 # M3：Local Product Hardening 与 Native Sandbox Gate
 
-状态：Planned / Local Isolation Architecture Accepted / G0–G6 Not Started
+状态：In Progress / Local Isolation Architecture Accepted / Slice 1 Contract Implemented / G0–G6 Not Passed
 规划日期：2026-09-05
 前置条件：M0–M2 Engineering Baselines Frozen
 
@@ -205,10 +205,12 @@ G2 至少使用一个固定测试 executable 验证：
 
 ### Slice 1：Tool Sandbox Contract
 
-- 新增 `SandboxedToolExecutorPort`、ToolExecutionManifest/Result Schema 和 Fake Adapter。
-- 保持 `AgentRuntimePort`、Agent Loop、Tool Policy、Approval 和 Execution Ledger 的现有职责边界。
-- 将现有 `tool.execute()` 路由为 Host built-in 或 Sandboxed external 两类明确落点。
-- 用 Fake 验证权限、argv、路径、环境、网络、超时、取消、幂等和结果提交边界。
+- [x] 新增 `SandboxedToolExecutorPort`、ToolExecutionManifest/Result Schema 和 Fake Adapter。
+- [x] 保持 `AgentRuntimePort`、Agent Loop、Tool Policy、Approval 和 Execution Ledger 的现有职责边界。
+- [x] 将现有 Tool 路由为显式 `host` 或 `sandboxed` 两类落点；缺少 Native Sandbox Executor 时 fail-closed。
+- [x] 用 Fake 验证身份、权限摘要、固定 argv、路径、环境、网络、超时、取消、幂等重放和结果提交边界。
+
+以上仅是离线 Contract 证据，不代表 G2 已通过。macOS Seatbelt Adapter、真实进程树隔离、攻击回归和 Sandbox 输出文件实体验证仍属于 Slice 2。
 
 ### Slice 2：macOS Seatbelt Adapter
 

@@ -47,6 +47,7 @@ const runtime = new BlackxAgentRuntime({
 			required: ["nonce"],
 			additionalProperties: false,
 		},
+		execution: "host",
 		risk: "read",
 		idempotent: true,
 		timeoutMs: 5_000,

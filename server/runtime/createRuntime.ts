@@ -2,6 +2,7 @@ import { SkillRegistry } from "../../src/agent/skills";
 import { printSkills } from "../../src/print/skills";
 import { manufacturingSkills } from "../../src/manufacturing/skills";
 import type { AgentTool } from "../../src/agent/contracts";
+import type { SandboxedToolExecutorPort } from "../../src/agent/sandbox";
 import type { AgentRuntimePort } from "../../src/runtime/contracts";
 import { AnthropicMessagesClient } from "../anthropic/client";
 import { BlackxAgentRuntime, type BlackxAgentRuntimeOptions } from "./agentRuntime";
@@ -16,6 +17,7 @@ export interface RuntimeServices {
 
 export interface RuntimeServicesOptions {
 	tools?: readonly AgentTool[];
+	sandboxedToolExecutor?: SandboxedToolExecutorPort;
 	autonomouslyApprovedTools?: ReadonlySet<string>;
 	resolveImageAttachment?: BlackxAgentRuntimeOptions["resolveImageAttachment"];
 }
@@ -47,6 +49,7 @@ export function createRuntime(
 				sessions: state,
 				snapshots: state,
 				tools: options.tools,
+				sandboxedToolExecutor: options.sandboxedToolExecutor,
 				resolveImageAttachment: options.resolveImageAttachment,
 			}),
 			state,
@@ -71,6 +74,7 @@ export function createRuntime(
 				),
 				skills: new SkillRegistry([...printSkills, ...manufacturingSkills]),
 				tools: options.tools,
+				sandboxedToolExecutor: options.sandboxedToolExecutor,
 				resolveImageAttachment: options.resolveImageAttachment,
 				approval: {
 					authorize: async (request) => options.autonomouslyApprovedTools?.has(request.tool)

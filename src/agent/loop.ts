@@ -8,6 +8,7 @@ import type {
 	AgentToolApprovalPort,
 	AgentToolAuditPort,
 	AgentToolExecution,
+	AgentToolExecutionContext,
 	AgentToolExecutionRecord,
 	AgentToolExecutionStore,
 	AgentToolFailureCode,
@@ -16,6 +17,11 @@ import type {
 import { AgentCoreError } from "./contracts";
 import { compactSummaryPrefix, ContextEngine } from "./context";
 import { AgentHooks } from "./hooks";
+import type {
+	SandboxedToolExecutorPort,
+	ToolExecutionManifest,
+	ToolExecutionResult,
+} from "./sandbox";
 import { ModelContextSummarizer } from "./summarizer";
 
 const emptyUsage = (): AgentUsage => ({
@@ -68,6 +74,91 @@ function validToolInput(tool: AgentTool, input: unknown): boolean {
 	}
 }
 
+function validSandboxManifest(
+	manifest: ToolExecutionManifest,
+	tool: AgentTool,
+	context: AgentToolExecutionContext & { sandboxAttemptId: string },
+): boolean {
+	return manifest.schemaVersion === "tool-execution-manifest.v1" &&
+		manifest.attemptId === context.sandboxAttemptId &&
+		manifest.tenantId === context.tenantId &&
+		manifest.workspaceId === context.workspaceId &&
+		manifest.runId === context.runId &&
+		manifest.stageId === context.stageId &&
+		manifest.executionId === context.executionId &&
+		manifest.toolCallId === context.toolCallId &&
+		manifest.tool.name === tool.name &&
+		manifest.tool.version.trim().length > 0 &&
+		manifest.sandboxProfile === "blackx-local-tool-sandbox.v1" &&
+		manifest.command.executable.trim().length > 0 &&
+		manifest.command.workingDirectory.trim().length > 0 &&
+		Array.isArray(manifest.command.argv) && manifest.command.argv.every((value) => typeof value === "string") &&
+		manifest.paths.temporaryDirectory.trim().length > 0 &&
+		Array.isArray(manifest.paths.readOnly) && manifest.paths.readOnly.every((value) => value.trim().length > 0) &&
+		Array.isArray(manifest.paths.writable) && manifest.paths.writable.every((value) => value.trim().length > 0) &&
+		Object.entries(manifest.environment).every(([key, value]) => key.trim().length > 0 && typeof value === "string") &&
+		Array.isArray(manifest.network.allowedDomains) &&
+		(manifest.network.mode === "allowlist" || manifest.network.allowedDomains.length === 0) &&
+		manifest.network.allowedDomains.every((value) => value.trim().length > 0) &&
+		manifest.limits.timeoutMs === tool.timeoutMs &&
+		manifest.limits.maxStdoutBytes > 0 &&
+		manifest.limits.maxStderrBytes > 0 &&
+		manifest.limits.maxOutputFiles >= 0 &&
+		manifest.limits.maxOutputBytes >= 0 &&
+		manifest.idempotencyKey === context.idempotencyKey &&
+		manifest.approvalId === context.approvalId;
+}
+
+function safeOutputPath(value: string): boolean {
+	return value.length > 0 &&
+		!value.startsWith("/") &&
+		!value.startsWith("\\") &&
+		!value.includes("\0") &&
+		!value.split(/[\\/]/).includes("..");
+}
+
+function validSandboxResult(result: ToolExecutionResult, manifest: ToolExecutionManifest): boolean {
+	const environmentKeys = Object.keys(manifest.environment).sort();
+	const reportedEnvironmentKeys = [...result.sandbox.permissions.environmentKeys].sort();
+	const outputBytes = result.outputs.reduce((total, output) => total + output.size, 0);
+	return result.schemaVersion === "tool-execution-result.v1" &&
+		result.attemptId === manifest.attemptId &&
+		result.sandbox.profile === manifest.sandboxProfile &&
+		result.sandbox.platform.trim().length > 0 &&
+		result.sandbox.permissions.readOnlyPaths === manifest.paths.readOnly.length &&
+		result.sandbox.permissions.writablePaths === manifest.paths.writable.length &&
+		result.sandbox.permissions.network === manifest.network.mode &&
+		JSON.stringify(reportedEnvironmentKeys) === JSON.stringify(environmentKeys) &&
+		Number.isFinite(result.durationMs) && result.durationMs >= 0 &&
+		Number.isFinite(Date.parse(result.startedAt)) &&
+		Number.isFinite(Date.parse(result.completedAt)) &&
+		new TextEncoder().encode(result.stdout.text).length <= manifest.limits.maxStdoutBytes &&
+		new TextEncoder().encode(result.stderr.text).length <= manifest.limits.maxStderrBytes &&
+		result.outputs.length <= manifest.limits.maxOutputFiles &&
+		outputBytes <= manifest.limits.maxOutputBytes &&
+		result.outputs.every((output) =>
+			safeOutputPath(output.path) &&
+			Number.isSafeInteger(output.size) && output.size >= 0 &&
+			output.mimeType.trim().length > 0 &&
+			/^[a-f0-9]{64}$/.test(output.sha256)
+		) &&
+		(result.status !== "succeeded" || result.exitCode === 0);
+}
+
+function sandboxFailure(status: Exclude<ToolExecutionResult["status"], "succeeded">): {
+	code: AgentToolFailureCode;
+	message: string;
+} {
+	switch (status) {
+		case "timed_out": return { code: "tool_timeout", message: "Sandboxed Tool execution timed out" };
+		case "cancelled": return { code: "tool_cancelled", message: "Sandboxed Tool execution was cancelled" };
+		case "resource_exhausted": return { code: "tool_resource_exhausted", message: "Sandboxed Tool exceeded a resource limit" };
+		case "policy_denied": return { code: "tool_sandbox_policy_denied", message: "Sandbox policy denied Tool execution" };
+		case "sandbox_unavailable": return { code: "tool_sandbox_unavailable", message: "Native Tool Sandbox is unavailable" };
+		case "failed": return { code: "tool_execution_failed", message: "Sandboxed Tool execution failed" };
+	}
+}
+
 function nestedCode(error: unknown): string | undefined {
 	let current = error;
 	for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
@@ -114,6 +205,7 @@ export interface AgentLoopOptions {
 	approval?: AgentToolApprovalPort;
 	audit?: AgentToolAuditPort;
 	executions?: AgentToolExecutionStore;
+	sandboxedToolExecutor?: SandboxedToolExecutorPort;
 	maxIterations?: number;
 	maxToolExecutions?: number;
 	maxInputTokens?: number;
@@ -426,31 +518,84 @@ export class AgentLoop {
 								const toolSignal = signal
 									? AbortSignal.any([signal, timeout.signal])
 									: timeout.signal;
-								const result = toolOutput(
-									await abortable(tool.execute(call.input, {
-										tenantId: input.tenantId,
-										workspaceId: input.workspaceId,
-										runId: input.runId,
-										stageId: input.stageId,
-										actorId: input.actorId,
-										executionId: input.executionId,
-										toolCallId: call.id,
-										idempotencyKey,
-										approvalId,
-										signal: toolSignal,
-									}), toolSignal),
-									tool.maxResultChars,
-								);
-								output = result.text;
-								resultTruncated = result.truncated;
-								status = "succeeded";
+								const executionContext: AgentToolExecutionContext = {
+									tenantId: input.tenantId,
+									workspaceId: input.workspaceId,
+									runId: input.runId,
+									stageId: input.stageId,
+									actorId: input.actorId,
+									executionId: input.executionId,
+									toolCallId: call.id,
+									idempotencyKey,
+									approvalId,
+									signal: toolSignal,
+								};
+								if (tool.execution === "host") {
+									const result = toolOutput(
+										await abortable(tool.execute(call.input, executionContext), toolSignal),
+										tool.maxResultChars,
+									);
+									output = result.text;
+									resultTruncated = result.truncated;
+									status = "succeeded";
+								} else if (!this.options.sandboxedToolExecutor) {
+									failureCode = "tool_sandbox_unavailable";
+									status = "failed";
+									output = toolFailure(failureCode, "Native Tool Sandbox is unavailable");
+								} else {
+									const sandboxContext = {
+										...executionContext,
+										sandboxAttemptId: crypto.randomUUID(),
+									};
+									const manifest = tool.createManifest(call.input, sandboxContext);
+									if (!validSandboxManifest(manifest, tool, sandboxContext)) {
+										failureCode = "tool_sandbox_policy_denied";
+										status = "denied";
+										output = toolFailure(failureCode, "Sandboxed Tool manifest failed Host validation");
+									} else {
+										const sandboxResult = await abortable(
+											this.options.sandboxedToolExecutor.execute(manifest, toolSignal),
+											toolSignal,
+										);
+										if (!validSandboxResult(sandboxResult, manifest)) {
+											failureCode = "tool_execution_failed";
+											status = tool.risk === "read" ? "failed" : "unknown";
+											output = toolFailure(failureCode, "Sandboxed Tool result failed Host validation");
+										} else if (sandboxResult.status === "succeeded") {
+											const result = toolOutput(sandboxResult, tool.maxResultChars);
+											output = result.text;
+											resultTruncated = result.truncated;
+											status = "succeeded";
+										} else {
+											const failure = sandboxFailure(sandboxResult.status);
+											failureCode = failure.code;
+											status = sandboxResult.status === "policy_denied"
+												? "denied"
+												: sandboxResult.status === "sandbox_unavailable" || tool.risk === "read"
+													? "failed"
+													: "unknown";
+											output = toolFailure(failure.code, failure.message);
+										}
+									}
+								}
 							}
 						} catch (error) {
 							if (signal?.aborted) throw signal.reason;
 							if (error instanceof AgentCoreError) throw error;
-							failureCode = timeout.signal.aborted ? "tool_timeout" : "tool_execution_failed";
+							failureCode = timeout.signal.aborted
+								? "tool_timeout"
+								: tool.execution === "sandboxed"
+									? "tool_sandbox_unavailable"
+									: "tool_execution_failed";
 							status = tool.risk === "read" ? "failed" : "unknown";
-							output = toolFailure(failureCode, failureCode === "tool_timeout" ? "Tool execution timed out" : "Tool execution failed");
+							output = toolFailure(
+								failureCode,
+								failureCode === "tool_timeout"
+									? "Tool execution timed out"
+									: failureCode === "tool_sandbox_unavailable"
+										? "Native Tool Sandbox failed"
+										: "Tool execution failed",
+							);
 						} finally {
 							if (timer) clearTimeout(timer);
 						}

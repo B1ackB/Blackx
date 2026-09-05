@@ -1,3 +1,5 @@
+import type { ToolExecutionManifest } from "./sandbox";
+
 export interface AgentToolCall {
 	id: string;
 	name: string;
@@ -59,15 +61,26 @@ export interface AgentToolDefinition {
 	inputSchema: Record<string, unknown>;
 }
 
-export interface AgentTool extends AgentToolDefinition {
+interface AgentToolBase extends AgentToolDefinition {
 	risk: "read" | "write" | "publish";
 	idempotent: boolean;
 	timeoutMs: number;
 	maxResultChars: number;
 	validate(input: unknown): boolean;
 	createIdempotencyKey?(input: unknown, turnIdempotencyKey: string): string;
+}
+
+export interface AgentHostTool extends AgentToolBase {
+	execution: "host";
 	execute(input: unknown, context: AgentToolExecutionContext): Promise<unknown>;
 }
+
+export interface AgentSandboxedTool extends AgentToolBase {
+	execution: "sandboxed";
+	createManifest(input: unknown, context: AgentSandboxExecutionContext): ToolExecutionManifest;
+}
+
+export type AgentTool = AgentHostTool | AgentSandboxedTool;
 
 export type AgentToolFailureCode =
 	| "tool_not_allowed"
@@ -78,6 +91,10 @@ export type AgentToolFailureCode =
 	| "tool_approval_denied"
 	| "tool_execution_store_required"
 	| "tool_timeout"
+	| "tool_cancelled"
+	| "tool_resource_exhausted"
+	| "tool_sandbox_policy_denied"
+	| "tool_sandbox_unavailable"
 	| "tool_execution_unknown"
 	| "tool_execution_failed";
 
@@ -92,6 +109,10 @@ export interface AgentToolExecutionContext {
 	idempotencyKey: string;
 	approvalId?: string;
 	signal: AbortSignal;
+}
+
+export interface AgentSandboxExecutionContext extends AgentToolExecutionContext {
+	sandboxAttemptId: string;
 }
 
 export interface AgentToolExecution {

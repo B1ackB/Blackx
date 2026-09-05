@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentModelProvider, AgentTool } from "../../src/agent/contracts";
+import type { AgentHostTool, AgentModelProvider, AgentTool } from "../../src/agent/contracts";
 import { ContextEngine } from "../../src/agent/context";
 import { AgentHooks } from "../../src/agent/hooks";
 import { SkillRegistry } from "../../src/agent/skills";
@@ -74,10 +74,11 @@ describe("Blackx Agent Runtime contract", () => {
 				return { text: "done", toolCalls: [], usage };
 			},
 		};
-		const tool: AgentTool = {
+		const tool: AgentHostTool = {
 			name: "lookup",
 			description: "Read a test value",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "read",
 			idempotent: true,
 			timeoutMs: 1_000,
@@ -344,10 +345,11 @@ describe("Blackx Agent Runtime contract", () => {
 				return { text: "recovered", toolCalls: [], usage };
 			},
 		};
-		const slow: AgentTool = {
+		const slow: AgentHostTool = {
 			name: "slow",
 			description: "Never returns",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "read",
 			idempotent: true,
 			timeoutMs: 5,
@@ -386,10 +388,11 @@ describe("Blackx Agent Runtime contract", () => {
 				return { text: "", toolCalls: [{ id: `call-${calls}`, name: "read", input: {} }], usage };
 			},
 		};
-		const read: AgentTool = {
+		const read: AgentHostTool = {
 			name: "read",
 			description: "Read",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "read",
 			idempotent: true,
 			timeoutMs: 100,
@@ -428,10 +431,11 @@ describe("Blackx Agent Runtime contract", () => {
 
 	it("uses 32 model iterations as the default execution-slice fuse", async () => {
 		let calls = 0;
-		const read: AgentTool = {
+		const read: AgentHostTool = {
 			name: "read-loop",
 			description: "Read",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "read",
 			idempotent: true,
 			timeoutMs: 100,
@@ -512,10 +516,11 @@ describe("Blackx Agent Runtime contract", () => {
 		const state = new InMemoryAgentStateStore();
 		let modelCalls = 0;
 		let writes = 0;
-		const write: AgentTool = {
+		const write: AgentHostTool = {
 			name: "durable-write",
 			description: "Write once",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "write",
 			idempotent: true,
 			timeoutMs: 100,
@@ -602,10 +607,11 @@ describe("Blackx Agent Runtime contract", () => {
 		});
 		let calls = 0;
 		let writes = 0;
-		const tool: AgentTool = {
+		const tool: AgentHostTool = {
 			name: "uncertain-write",
 			description: "Write",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "write",
 			idempotent: true,
 			timeoutMs: 100,
@@ -671,10 +677,11 @@ describe("Blackx Agent Runtime contract", () => {
 
 		let calls = 0;
 		let writes = 0;
-		const write: AgentTool = {
+		const write: AgentHostTool = {
 			name: "audited-write",
 			description: "Write",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "write",
 			idempotent: true,
 			timeoutMs: 100,
@@ -705,10 +712,11 @@ describe("Blackx Agent Runtime contract", () => {
 
 	it("denies write tools by default and executes them only with trusted approval and audit", async () => {
 		let deniedCalls = 0;
-		const write: AgentTool = {
+		const write: AgentHostTool = {
 			name: "write-record",
 			description: "Write one record",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "write",
 			idempotent: true,
 			timeoutMs: 100,
@@ -800,10 +808,11 @@ describe("Blackx Agent Runtime contract", () => {
 
 	it("classifies model-visible Tool validation, execution, idempotency, and approval failures", async () => {
 		let calls = 0;
-		const base: AgentTool = {
+		const base: AgentHostTool = {
 			name: "base",
 			description: "Test tool",
 			inputSchema: { type: "object" },
+			execution: "host",
 			risk: "read",
 			idempotent: true,
 			timeoutMs: 100,
