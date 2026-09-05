@@ -234,6 +234,31 @@ describe("SandboxedToolExecutor contract", () => {
 		expect(executor.manifests).toHaveLength(0);
 	});
 
+	it("rejects persistent write paths for a read-risk sandboxed Tool", async () => {
+		const base = sandboxTool();
+		const executor = new FakeSandboxedToolExecutor(async (manifest) => result(manifest));
+		const runtime = new BlackxAgentRuntime({
+			provider: provider((content) => {
+				expect(JSON.parse(content)).toMatchObject({ error: { code: "tool_sandbox_policy_denied" } });
+			}),
+			tools: [sandboxTool({
+				createInvocation: (input, context) => ({
+					...base.createInvocation(input, context),
+					paths: {
+						...base.createInvocation(input, context).paths,
+						writable: ["/workspace/output"],
+					},
+				}),
+			})],
+			sandboxedToolExecutor: executor,
+			skills: new SkillRegistry(),
+		});
+
+		await runtime.executeTurn(request);
+
+		expect(executor.manifests).toHaveLength(0);
+	});
+
 	it("maps Sandbox timeout and aborts the executor signal", async () => {
 		let aborted = false;
 		const executor = new FakeSandboxedToolExecutor((_manifest, signal) => new Promise((_resolve, reject) => {

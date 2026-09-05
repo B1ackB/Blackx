@@ -9,7 +9,7 @@
 
 ADR-0007 将整个 Agent execution slice 放入远端 Linux gVisor Sandbox。这适合托管多租户云服务，但要求独立 Runner、Gateway 和部署基础设施，不符合当前希望采用 Claude Code/Codex 式“安装后在用户现有电脑上运行”的产品形态。
 
-当前 `sandboxMode` 只有逻辑权限校验。Host built-in Tool 仍在 Node.js Host 进程内运行；显式 `sandboxed` Tool 已具备 Port 与 Fake Contract，但尚无真实 OS Adapter，因此本地模式仍需要操作系统强制的文件、网络和进程边界。
+当前 `sandboxMode` 是 Host 逻辑权限校验。Host built-in Tool 仍在 Node.js Host 进程内运行；显式 `sandboxed` Tool 已具备 Port、Fake Contract 和 macOS Seatbelt Adapter。Seatbelt 基线已实测最小文件读写、默认断网、环境白名单、输出实体校验、超时、取消和进程组终止，但域名 allowlist Proxy、进程数/CPU/内存硬上限、正式 Native Tool 与 Artifact 导入尚未完成，因此 G2 仍未通过。
 
 ## 决定
 
@@ -50,7 +50,8 @@ ADR-0007 将整个 Agent execution slice 放入远端 Linux gVisor Sandbox。这
 ## 验证
 
 - Fake Contract 覆盖 Host 编译的固定 executable/argv、路径、环境、网络、Manifest 不可变性、超时、取消和结构化 Failure。
-- macOS Seatbelt 回归覆盖 Home/SSH/其他 Workspace 读取、Workspace 外写入、默认拒绝网络、子进程继承、路径穿越、超大输出、超时和孤儿进程。
+- macOS Seatbelt 本机回归已覆盖允许输入、其他 Workspace 读取、未声明 Workspace 写入、环境 Secret 不继承、localhost 网络、子进程继承、路径越界、符号链接、硬链接、输出 Digest、超大 stdout、超时、用户取消和进程组清理。
+- 域名 allowlist Proxy、Fork Bomb/进程数、CPU/内存和 Host Crash 后孤儿清理仍是 G2 未完成证据；当前 allowlist 请求 fail-closed。
 - M2 Requirement Brief 正式链路通过 Native Sandbox 执行 `asset_metadata_inspect`，并在 pause/resume、重复投递与五类 Crash 下只提交一个 Artifact Version。
 - M0、M1、M2 固定 Eval、权限、租户、类型检查和构建保持通过。
 

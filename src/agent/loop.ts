@@ -481,54 +481,62 @@ export class AgentLoop {
 										sandboxAttemptId: crypto.randomUUID(),
 									};
 									const invocation = tool.createInvocation(call.input, sandboxContext);
-									const manifest = compileToolExecutionManifest({
-										attemptId: sandboxContext.sandboxAttemptId,
-										tenantId: sandboxContext.tenantId,
-										workspaceId: sandboxContext.workspaceId,
-										runId: sandboxContext.runId,
-										stageId: sandboxContext.stageId,
-										executionId: sandboxContext.executionId,
-										toolCallId: sandboxContext.toolCallId,
-										tool: { name: tool.name, version: tool.version },
-										command: {
-											executable: tool.executable,
-											argv: invocation.argv,
-											workingDirectory: invocation.workingDirectory,
-										},
-										paths: invocation.paths,
-										environment: tool.sandbox.environment,
-										network: tool.sandbox.network,
-										limits: { timeoutMs: tool.timeoutMs, ...tool.sandbox.limits },
-										idempotencyKey: sandboxContext.idempotencyKey,
-										approvalId: sandboxContext.approvalId,
-									});
-									if (!validToolExecutionManifest(manifest)) {
+									const persistentWriteDenied = invocation.paths.writable.length > 0 &&
+										(tool.risk === "read" || input.policy.sandboxMode !== "workspace-write");
+									if (persistentWriteDenied) {
 										failureCode = "tool_sandbox_policy_denied";
 										status = "denied";
-										output = toolFailure(failureCode, "Sandboxed Tool manifest failed Host validation");
+										output = toolFailure(failureCode, "Sandboxed Tool requested persistent writes outside its Host policy");
 									} else {
-										const sandboxResult = await abortable(
-											this.options.sandboxedToolExecutor.execute(manifest, toolSignal),
-											toolSignal,
-										);
-										if (!validToolExecutionResult(sandboxResult, manifest)) {
-											failureCode = "tool_execution_failed";
-											status = tool.risk === "read" ? "failed" : "unknown";
-											output = toolFailure(failureCode, "Sandboxed Tool result failed Host validation");
-										} else if (sandboxResult.status === "succeeded") {
-											const result = toolOutput(sandboxResult, tool.maxResultChars);
-											output = result.text;
-											resultTruncated = result.truncated;
-											status = "succeeded";
+										const manifest = compileToolExecutionManifest({
+											attemptId: sandboxContext.sandboxAttemptId,
+											tenantId: sandboxContext.tenantId,
+											workspaceId: sandboxContext.workspaceId,
+											runId: sandboxContext.runId,
+											stageId: sandboxContext.stageId,
+											executionId: sandboxContext.executionId,
+											toolCallId: sandboxContext.toolCallId,
+											tool: { name: tool.name, version: tool.version },
+											command: {
+												executable: tool.executable,
+												argv: invocation.argv,
+												workingDirectory: invocation.workingDirectory,
+											},
+											paths: invocation.paths,
+											environment: tool.sandbox.environment,
+											network: tool.sandbox.network,
+											limits: { timeoutMs: tool.timeoutMs, ...tool.sandbox.limits },
+											idempotencyKey: sandboxContext.idempotencyKey,
+											approvalId: sandboxContext.approvalId,
+										});
+										if (!validToolExecutionManifest(manifest)) {
+											failureCode = "tool_sandbox_policy_denied";
+											status = "denied";
+											output = toolFailure(failureCode, "Sandboxed Tool manifest failed Host validation");
 										} else {
-											const failure = sandboxFailure(sandboxResult.status);
-											failureCode = failure.code;
-											status = sandboxResult.status === "policy_denied"
-												? "denied"
-												: sandboxResult.status === "sandbox_unavailable" || tool.risk === "read"
-													? "failed"
-													: "unknown";
-											output = toolFailure(failure.code, failure.message);
+											const sandboxResult = await abortable(
+												this.options.sandboxedToolExecutor.execute(manifest, toolSignal),
+												toolSignal,
+											);
+											if (!validToolExecutionResult(sandboxResult, manifest)) {
+												failureCode = "tool_execution_failed";
+												status = tool.risk === "read" ? "failed" : "unknown";
+												output = toolFailure(failureCode, "Sandboxed Tool result failed Host validation");
+											} else if (sandboxResult.status === "succeeded") {
+												const result = toolOutput(sandboxResult, tool.maxResultChars);
+												output = result.text;
+												resultTruncated = result.truncated;
+												status = "succeeded";
+											} else {
+												const failure = sandboxFailure(sandboxResult.status);
+												failureCode = failure.code;
+												status = sandboxResult.status === "policy_denied"
+													? "denied"
+													: sandboxResult.status === "sandbox_unavailable" || tool.risk === "read"
+														? "failed"
+														: "unknown";
+												output = toolFailure(failure.code, failure.message);
+											}
 										}
 									}
 								}

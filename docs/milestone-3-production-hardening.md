@@ -1,6 +1,6 @@
 # M3：Local Product Hardening 与 Native Sandbox Gate
 
-状态：In Progress / Local Isolation Architecture Accepted / Slice 1 Contract Implemented / G0–G6 Not Passed
+状态：In Progress / Local Isolation Architecture Accepted / Slice 2 Seatbelt Baseline Implemented / G0–G6 Not Passed
 规划日期：2026-09-05
 前置条件：M0–M2 Engineering Baselines Frozen
 
@@ -8,7 +8,7 @@
 
 M0–M2 已证明单机 Agent Loop、Queue、Worker、Artifact、Evaluation、Approval、恢复和多租户标识可以形成工程闭环，但仍是开发基线，不是可直接交付的本地产品安全基线。
 
-当前 `sandboxMode: read-only | workspace-write` 仍只是 Agent Tool 的逻辑权限条件。Host built-in Tool 在服务端 Node.js 进程内调用 `tool.execute()`；显式 `sandboxed` Tool 已通过 `SandboxedToolExecutorPort` 路由，但当前只有 Fake Adapter，没有真实 OS 子进程、文件系统、网络、CPU、内存或 PID 隔离，因此仍不得称为真实 Sandbox。
+当前 `sandboxMode: read-only | workspace-write` 仍是 Agent Tool 的 Host 逻辑权限条件。Host built-in Tool 在服务端 Node.js 进程内调用 `tool.execute()`；显式 `sandboxed` Tool 已通过 `SandboxedToolExecutorPort` 路由。在 macOS composition root 中，未显式注入 Fake 时会使用真实 Seatbelt Adapter，并按 `BLACKX_WORKSPACE_ROOT` 或当前目录约束路径；非 macOS 仍 fail-closed。当前尚未接入正式 `asset_metadata_inspect` Tool、域名 allowlist Host Proxy、进程数/内存限制和 Artifact 导入，因此 G2 仍未通过。
 
 M3 改为 Claude Code/Codex 风格的本地运行模式：用户现有电脑就是执行机器，Agent Loop 和 Provider Adapter 作为本地受信控制进程运行；模型驱动的命令和外部 Tool 子进程必须由原生 OS Sandbox 隔离。当前主平台为 macOS，优先复用系统自带 Seatbelt，不要求 Docker、额外 Linux 主机或云端 Runner。
 
@@ -117,7 +117,7 @@ Blackx 本地版与 Claude Code/Codex 本地模式一样，复用用户设备与
 - 输出文件相对路径、大小、MIME 和 SHA-256 Manifest
 - Sandbox Profile、平台、终止原因和实际使用的权限摘要
 
-Sandbox 子进程不能保存 Session、Event、Artifact、Approval 或 Evaluation。Slice 1 Host 校验 Attempt/Profile、权限摘要、时间、stdout/stderr 上限，以及输出相对路径、重复项、数量、大小、MIME 和 SHA-256 格式。Slice 2/3 在导入真实文件前还必须重新检查幂等记录、Workspace 边界、符号链接、硬链接、文件类型、实际大小与 Digest 和当前 lease；无效、超限或迟到结果一律拒绝。
+Sandbox 子进程不能保存 Session、Event、Artifact、Approval 或 Evaluation。Slice 1 Host 校验 Attempt/Profile、权限摘要、时间、stdout/stderr 上限，以及输出相对路径、重复项、数量、大小、MIME 和 SHA-256 格式。当前 Slice 2 Seatbelt Adapter 还会在 spawn 前校验配置 Workspace 的词法与真实路径边界、拒绝权限路径符号链接，并在进程组终止后扫描临时目录，拒绝符号链接、硬链接和非普通文件，按实体重新计算数量、大小、MIME 与 SHA-256；扫描完成后清理本次临时目录。Slice 3 Artifact 导入前仍须检查幂等记录、当前 lease 和迟到结果，并把经过验证的内容原子提交到 Artifact Store。
 
 ## 5. 默认本地隔离 Profile
 
@@ -127,9 +127,9 @@ Sandbox 子进程不能保存 Session、Event、Artifact、Approval 或 Evaluati
 - executable 必须来自 Host 允许清单，通过 argv 数组传参并设置 `shell: false`
 - 默认只能读取当前 Workspace 所需路径，只能写明确的工作目录和临时目录
 - 默认拒绝 Home、SSH、Shell 配置、系统敏感路径、其他 Workspace 和 `.git` 敏感控制文件写入
-- 默认无网络；需要网络的 Tool 只能通过 Host 外部代理访问 allowlist 域名
+- 默认无网络；当前 Seatbelt Adapter 已实测拒绝 localhost，`allowlist` 在 Host 外部代理落地前 fail-closed
 - 环境变量使用显式白名单，不传递 Provider Key、数据库密码、Cloud Credential 或完整宿主环境
-- Host Watchdog 强制 Wall-clock Timeout、stdout/stderr 和输出大小限制，并在取消时终止整个子进程树
+- Host Watchdog 强制 Wall-clock Timeout、stdout/stderr 和输出大小限制，并在取消时终止整个子进程组；进程数量、CPU 和内存硬上限尚未完成
 - Sandbox 创建失败必须 fail-closed，不允许自动降级为 unsandboxed execution
 - 每次 Tool Call 使用新的临时目录；结束后确定性清理
 - Profile 由 Host 决定，模型不能通过输入修改权限、网络、环境或超时
@@ -214,10 +214,12 @@ G2 至少使用一个固定测试 executable 验证：
 
 ### Slice 2：macOS Seatbelt Adapter
 
-- 使用 Node.js `child_process.spawn` 与固定 argv 启动 Seatbelt 包装进程，禁止 `shell: true`。
-- 实现 `read-only`、`workspace-write`、网络 deny/allowlist、env allowlist、超时/取消和 Output Manifest。
-- Sandbox 能力不可用或 Profile 编译失败时 fail-closed，并提供用户可执行的诊断。
-- 跑完 G2 攻击回归；不得要求用户安装 Docker。
+- [x] 使用 Node.js `child_process.spawn` 与固定 argv 启动 `/usr/bin/sandbox-exec`，显式设置 `shell: false`、独立进程组和环境白名单。
+- [x] 以文件读写 deny-all 后按 Manifest 重开路径，覆盖 read-only、workspace-write、默认断网、超时、取消、stdout/stderr 和 Output Manifest。
+- [x] Sandbox 不可用、Workspace/真实路径越界、权限路径符号链接或临时目录冲突时 fail-closed，并提供结构化终止原因。
+- [x] 本机攻击回归已覆盖允许输入、未声明读写、环境 Secret 不继承、localhost 断网、符号链接、硬链接、输出 Digest、stdout 超限、超时、用户取消和子进程组清理。运行命令：`BLACKX_RUN_SEATBELT_TESTS=1 npx vitest run server/runtime/macOsSeatbeltSandboxedToolExecutor.test.ts`。
+- [ ] 增加 Sandbox 外 Host Proxy 后支持域名 allowlist；当前请求会返回 `sandbox_unavailable`，不会降级为直接联网。
+- [ ] 增加进程数、CPU/内存边界、Fork Bomb 与 Host Crash 后孤儿清理回归；完成全部 G2 证据前仍不得把本 Slice 或 G2 标记为完成。
 
 ### Slice 3：M2 正式纵向切片
 
