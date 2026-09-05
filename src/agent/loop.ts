@@ -17,9 +17,13 @@ import type {
 import { AgentCoreError } from "./contracts";
 import { compactSummaryPrefix, ContextEngine } from "./context";
 import { AgentHooks } from "./hooks";
+import {
+	compileToolExecutionManifest,
+	validToolExecutionManifest,
+	validToolExecutionResult,
+} from "./sandbox";
 import type {
 	SandboxedToolExecutorPort,
-	ToolExecutionManifest,
 	ToolExecutionResult,
 } from "./sandbox";
 import { ModelContextSummarizer } from "./summarizer";
@@ -72,77 +76,6 @@ function validToolInput(tool: AgentTool, input: unknown): boolean {
 	} catch {
 		return false;
 	}
-}
-
-function validSandboxManifest(
-	manifest: ToolExecutionManifest,
-	tool: AgentTool,
-	context: AgentToolExecutionContext & { sandboxAttemptId: string },
-): boolean {
-	return manifest.schemaVersion === "tool-execution-manifest.v1" &&
-		manifest.attemptId === context.sandboxAttemptId &&
-		manifest.tenantId === context.tenantId &&
-		manifest.workspaceId === context.workspaceId &&
-		manifest.runId === context.runId &&
-		manifest.stageId === context.stageId &&
-		manifest.executionId === context.executionId &&
-		manifest.toolCallId === context.toolCallId &&
-		manifest.tool.name === tool.name &&
-		manifest.tool.version.trim().length > 0 &&
-		manifest.sandboxProfile === "blackx-local-tool-sandbox.v1" &&
-		manifest.command.executable.trim().length > 0 &&
-		manifest.command.workingDirectory.trim().length > 0 &&
-		Array.isArray(manifest.command.argv) && manifest.command.argv.every((value) => typeof value === "string") &&
-		manifest.paths.temporaryDirectory.trim().length > 0 &&
-		Array.isArray(manifest.paths.readOnly) && manifest.paths.readOnly.every((value) => value.trim().length > 0) &&
-		Array.isArray(manifest.paths.writable) && manifest.paths.writable.every((value) => value.trim().length > 0) &&
-		Object.entries(manifest.environment).every(([key, value]) => key.trim().length > 0 && typeof value === "string") &&
-		Array.isArray(manifest.network.allowedDomains) &&
-		(manifest.network.mode === "allowlist" || manifest.network.allowedDomains.length === 0) &&
-		manifest.network.allowedDomains.every((value) => value.trim().length > 0) &&
-		manifest.limits.timeoutMs === tool.timeoutMs &&
-		manifest.limits.maxStdoutBytes > 0 &&
-		manifest.limits.maxStderrBytes > 0 &&
-		manifest.limits.maxOutputFiles >= 0 &&
-		manifest.limits.maxOutputBytes >= 0 &&
-		manifest.idempotencyKey === context.idempotencyKey &&
-		manifest.approvalId === context.approvalId;
-}
-
-function safeOutputPath(value: string): boolean {
-	return value.length > 0 &&
-		!value.startsWith("/") &&
-		!value.startsWith("\\") &&
-		!value.includes("\0") &&
-		!value.split(/[\\/]/).includes("..");
-}
-
-function validSandboxResult(result: ToolExecutionResult, manifest: ToolExecutionManifest): boolean {
-	const environmentKeys = Object.keys(manifest.environment).sort();
-	const reportedEnvironmentKeys = [...result.sandbox.permissions.environmentKeys].sort();
-	const outputBytes = result.outputs.reduce((total, output) => total + output.size, 0);
-	return result.schemaVersion === "tool-execution-result.v1" &&
-		result.attemptId === manifest.attemptId &&
-		result.sandbox.profile === manifest.sandboxProfile &&
-		result.sandbox.platform.trim().length > 0 &&
-		result.sandbox.permissions.readOnlyPaths === manifest.paths.readOnly.length &&
-		result.sandbox.permissions.writablePaths === manifest.paths.writable.length &&
-		result.sandbox.permissions.network === manifest.network.mode &&
-		JSON.stringify(reportedEnvironmentKeys) === JSON.stringify(environmentKeys) &&
-		Number.isFinite(result.durationMs) && result.durationMs >= 0 &&
-		Number.isFinite(Date.parse(result.startedAt)) &&
-		Number.isFinite(Date.parse(result.completedAt)) &&
-		new TextEncoder().encode(result.stdout.text).length <= manifest.limits.maxStdoutBytes &&
-		new TextEncoder().encode(result.stderr.text).length <= manifest.limits.maxStderrBytes &&
-		result.outputs.length <= manifest.limits.maxOutputFiles &&
-		outputBytes <= manifest.limits.maxOutputBytes &&
-		result.outputs.every((output) =>
-			safeOutputPath(output.path) &&
-			Number.isSafeInteger(output.size) && output.size >= 0 &&
-			output.mimeType.trim().length > 0 &&
-			/^[a-f0-9]{64}$/.test(output.sha256)
-		) &&
-		(result.status !== "succeeded" || result.exitCode === 0);
 }
 
 function sandboxFailure(status: Exclude<ToolExecutionResult["status"], "succeeded">): {
@@ -547,8 +480,29 @@ export class AgentLoop {
 										...executionContext,
 										sandboxAttemptId: crypto.randomUUID(),
 									};
-									const manifest = tool.createManifest(call.input, sandboxContext);
-									if (!validSandboxManifest(manifest, tool, sandboxContext)) {
+									const invocation = tool.createInvocation(call.input, sandboxContext);
+									const manifest = compileToolExecutionManifest({
+										attemptId: sandboxContext.sandboxAttemptId,
+										tenantId: sandboxContext.tenantId,
+										workspaceId: sandboxContext.workspaceId,
+										runId: sandboxContext.runId,
+										stageId: sandboxContext.stageId,
+										executionId: sandboxContext.executionId,
+										toolCallId: sandboxContext.toolCallId,
+										tool: { name: tool.name, version: tool.version },
+										command: {
+											executable: tool.executable,
+											argv: invocation.argv,
+											workingDirectory: invocation.workingDirectory,
+										},
+										paths: invocation.paths,
+										environment: tool.sandbox.environment,
+										network: tool.sandbox.network,
+										limits: { timeoutMs: tool.timeoutMs, ...tool.sandbox.limits },
+										idempotencyKey: sandboxContext.idempotencyKey,
+										approvalId: sandboxContext.approvalId,
+									});
+									if (!validToolExecutionManifest(manifest)) {
 										failureCode = "tool_sandbox_policy_denied";
 										status = "denied";
 										output = toolFailure(failureCode, "Sandboxed Tool manifest failed Host validation");
@@ -557,7 +511,7 @@ export class AgentLoop {
 											this.options.sandboxedToolExecutor.execute(manifest, toolSignal),
 											toolSignal,
 										);
-										if (!validSandboxResult(sandboxResult, manifest)) {
+										if (!validToolExecutionResult(sandboxResult, manifest)) {
 											failureCode = "tool_execution_failed";
 											status = tool.risk === "read" ? "failed" : "unknown";
 											output = toolFailure(failureCode, "Sandboxed Tool result failed Host validation");

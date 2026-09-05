@@ -51,40 +51,28 @@ function sandboxTool(overrides: Partial<AgentSandboxedTool> = {}): AgentSandboxe
 		idempotent: true,
 		timeoutMs,
 		maxResultChars: 4_000,
-		validate: (input) => Boolean(input) && typeof input === "object" &&
-			(input as { path?: unknown }).path === "assets/input.png",
-		createManifest: (input, context) => ({
-			schemaVersion: "tool-execution-manifest.v1",
-			attemptId: context.sandboxAttemptId,
-			tenantId: context.tenantId,
-			workspaceId: context.workspaceId,
-			runId: context.runId,
-			stageId: context.stageId,
-			executionId: context.executionId,
-			toolCallId: context.toolCallId,
-			tool: { name: tool.name, version: "1.0.0" },
-			sandboxProfile: "blackx-local-tool-sandbox.v1",
-			command: {
-				executable: "/usr/bin/sips",
-				argv: ["-g", "pixelWidth", String((input as { path: string }).path)],
-				workingDirectory: "/workspace",
-			},
-			paths: {
-				readOnly: ["/workspace/assets/input.png"],
-				writable: [],
-				temporaryDirectory: "/workspace/.blackx-tmp/attempt",
-			},
+		version: "1.0.0",
+		executable: "/usr/bin/sips",
+		sandbox: {
 			environment: { LANG: "C" },
 			network: { mode: "deny-all", allowedDomains: [] },
 			limits: {
-				timeoutMs: tool.timeoutMs,
 				maxStdoutBytes: 8_192,
 				maxStderrBytes: 8_192,
 				maxOutputFiles: 0,
 				maxOutputBytes: 0,
 			},
-			idempotencyKey: context.idempotencyKey,
-			approvalId: context.approvalId,
+		},
+		validate: (input) => Boolean(input) && typeof input === "object" &&
+			(input as { path?: unknown }).path === "assets/input.png",
+		createInvocation: (input) => ({
+			argv: ["-g", "pixelWidth", String((input as { path: string }).path)],
+			workingDirectory: "/workspace",
+			paths: {
+				readOnly: ["/workspace/assets/input.png"],
+				writable: [],
+				temporaryDirectory: "/workspace/.blackx-tmp/attempt",
+			},
 		}),
 	};
 	return { ...tool, ...overrides };
@@ -178,12 +166,15 @@ describe("SandboxedToolExecutor contract", () => {
 		});
 		expect(executor.manifests[0].attemptId).toEqual(expect.any(String));
 		expect(executor.manifests[0].environment).not.toHaveProperty("ANTHROPIC_API_KEY");
+		expect(Object.isFrozen(executor.manifests[0])).toBe(true);
+		expect(Object.isFrozen(executor.manifests[0].command.argv)).toBe(true);
+		expect(Object.isFrozen(executor.manifests[0].paths)).toBe(true);
 	});
 
 	it("fails closed when no Native Tool Sandbox executor is configured", async () => {
 		let compiled = false;
 		const tool = sandboxTool({
-			createManifest: () => {
+			createInvocation: () => {
 				compiled = true;
 				throw new Error("must not compile");
 			},
@@ -206,19 +197,34 @@ describe("SandboxedToolExecutor contract", () => {
 		}));
 	});
 
-	it("rejects a manifest that changes Host-owned identity before dispatch", async () => {
+	it("ignores invocation fields that try to override Host-owned identity", async () => {
 		const base = sandboxTool();
+		const executor = new FakeSandboxedToolExecutor(async (manifest) => result(manifest));
+		const runtime = new BlackxAgentRuntime({
+			provider: provider(),
+			tools: [sandboxTool({
+				createInvocation: (input, context) => ({
+					...base.createInvocation(input, context),
+					workspaceId: "model-controlled-workspace",
+				}),
+			})],
+			sandboxedToolExecutor: executor,
+			skills: new SkillRegistry(),
+		});
+
+		await runtime.executeTurn(request);
+
+		expect(executor.manifests).toHaveLength(1);
+		expect(executor.manifests[0].workspaceId).toBe(request.workspaceId);
+	});
+
+	it("rejects an unsafe Host manifest before Sandbox dispatch", async () => {
 		const executor = new FakeSandboxedToolExecutor(async (manifest) => result(manifest));
 		const runtime = new BlackxAgentRuntime({
 			provider: provider((content) => {
 				expect(JSON.parse(content)).toMatchObject({ error: { code: "tool_sandbox_policy_denied" } });
 			}),
-			tools: [sandboxTool({
-				createManifest: (input, context) => ({
-					...base.createManifest(input, context),
-					workspaceId: "model-controlled-workspace",
-				}),
-			})],
+			tools: [sandboxTool({ executable: "relative/sips" })],
 			sandboxedToolExecutor: executor,
 			skills: new SkillRegistry(),
 		});
@@ -323,6 +329,17 @@ describe("SandboxedToolExecutor contract", () => {
 	});
 
 	it("rejects an unsafe Sandbox output manifest without exposing stderr", async () => {
+		const base = sandboxTool();
+		const tool = sandboxTool({
+			sandbox: {
+				...base.sandbox,
+				limits: {
+					...base.sandbox.limits,
+					maxOutputFiles: 1,
+					maxOutputBytes: 10,
+				},
+			},
+		});
 		const executor = new FakeSandboxedToolExecutor(async (manifest) => result(manifest, {
 			stderr: { text: "secret-provider-detail", truncated: false },
 			outputs: [{
@@ -337,7 +354,7 @@ describe("SandboxedToolExecutor contract", () => {
 				expect(JSON.parse(content)).toMatchObject({ error: { code: "tool_execution_failed" } });
 				expect(content).not.toContain("secret-provider-detail");
 			}),
-			tools: [sandboxTool()],
+			tools: [tool],
 			sandboxedToolExecutor: executor,
 			skills: new SkillRegistry(),
 		});

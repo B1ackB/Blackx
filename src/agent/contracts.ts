@@ -1,4 +1,7 @@
-import type { ToolExecutionManifest } from "./sandbox";
+import type {
+	ToolExecutionInvocation,
+	ToolExecutionManifest,
+} from "./sandbox";
 
 export interface AgentToolCall {
 	id: string;
@@ -77,7 +80,14 @@ export interface AgentHostTool extends AgentToolBase {
 
 export interface AgentSandboxedTool extends AgentToolBase {
 	execution: "sandboxed";
-	createManifest(input: unknown, context: AgentSandboxExecutionContext): ToolExecutionManifest;
+	version: string;
+	executable: string;
+	sandbox: {
+		environment: ToolExecutionManifest["environment"];
+		network: ToolExecutionManifest["network"];
+		limits: Omit<ToolExecutionManifest["limits"], "timeoutMs">;
+	};
+	createInvocation(input: unknown, context: AgentSandboxExecutionContext): ToolExecutionInvocation;
 }
 
 export type AgentTool = AgentHostTool | AgentSandboxedTool;

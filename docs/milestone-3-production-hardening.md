@@ -8,7 +8,7 @@
 
 M0–M2 已证明单机 Agent Loop、Queue、Worker、Artifact、Evaluation、Approval、恢复和多租户标识可以形成工程闭环，但仍是开发基线，不是可直接交付的本地产品安全基线。
 
-当前 `sandboxMode: read-only | workspace-write` 只是 Agent Tool 的权限条件。通过校验后，Agent Loop 仍在服务端 Node.js 进程内直接调用 `tool.execute()`；它没有进程、文件系统、网络、CPU、内存或 PID 隔离，因此不得称为真实 Sandbox。
+当前 `sandboxMode: read-only | workspace-write` 仍只是 Agent Tool 的逻辑权限条件。Host built-in Tool 在服务端 Node.js 进程内调用 `tool.execute()`；显式 `sandboxed` Tool 已通过 `SandboxedToolExecutorPort` 路由，但当前只有 Fake Adapter，没有真实 OS 子进程、文件系统、网络、CPU、内存或 PID 隔离，因此仍不得称为真实 Sandbox。
 
 M3 改为 Claude Code/Codex 风格的本地运行模式：用户现有电脑就是执行机器，Agent Loop 和 Provider Adapter 作为本地受信控制进程运行；模型驱动的命令和外部 Tool 子进程必须由原生 OS Sandbox 隔离。当前主平台为 macOS，优先复用系统自带 Seatbelt，不要求 Docker、额外 Linux 主机或云端 Runner。
 
@@ -97,7 +97,7 @@ Blackx 本地版与 Claude Code/Codex 本地模式一样，复用用户设备与
 
 ## 4. Native Tool Sandbox Contract
 
-在 Agent Core 的 Tool 执行边界新增行业无关 `SandboxedToolExecutorPort`。它只负责把已经通过 Tool Policy 和 Approval 的外部进程调用编译为不可变 `ToolExecutionManifest`，不拥有 Workflow、业务权限或完成判定。
+在 Agent Core 的 Tool 执行边界新增行业无关 `SandboxedToolExecutorPort`。受信 Host Manifest Compiler 将已通过 Tool Policy 和 Approval 的调用，与注册 Tool 的固定版本、executable、环境、网络和资源上限合并为只读且运行时冻结的 `ToolExecutionManifest`。平台 Executor 只能校验并把该通用 Manifest 编译为 Seatbelt 等 OS Profile 后执行，不拥有 Workflow、业务权限或完成判定。
 
 最小请求包含：
 
@@ -117,7 +117,7 @@ Blackx 本地版与 Claude Code/Codex 本地模式一样，复用用户设备与
 - 输出文件相对路径、大小、MIME 和 SHA-256 Manifest
 - Sandbox Profile、平台、终止原因和实际使用的权限摘要
 
-Sandbox 子进程不能保存 Session、Event、Artifact、Approval 或 Evaluation。Host 必须在导入结果前重新检查幂等记录、路径边界、符号链接、文件类型、大小、Digest 和当前 lease；无效、超限或迟到结果一律拒绝。
+Sandbox 子进程不能保存 Session、Event、Artifact、Approval 或 Evaluation。Slice 1 Host 校验 Attempt/Profile、权限摘要、时间、stdout/stderr 上限，以及输出相对路径、重复项、数量、大小、MIME 和 SHA-256 格式。Slice 2/3 在导入真实文件前还必须重新检查幂等记录、Workspace 边界、符号链接、硬链接、文件类型、实际大小与 Digest 和当前 lease；无效、超限或迟到结果一律拒绝。
 
 ## 5. 默认本地隔离 Profile
 
@@ -156,8 +156,8 @@ Local Worker claim lease
 → Agent Loop 调用 Provider 并解析结构化 Tool Call
 → Host Tool Policy 校验 allowlist、输入、风险、预算和 Approval
 → Tool Execution Ledger claim 幂等键
-→ SandboxedToolExecutor 编译 ToolExecutionManifest
-→ Seatbelt 子进程执行固定 executable + argv
+→ Host Manifest Compiler 生成并冻结 ToolExecutionManifest
+→ SandboxedToolExecutor 校验 Manifest、编译 Seatbelt Profile 并执行固定 executable + argv
 → Host 验证 Result / Output Manifest / 当前 lease
 → 完成 Ledger，保存 Artifact/Event 或拒绝结果
 → 清理子进程与临时目录，Agent Loop 继续或结束
@@ -208,7 +208,7 @@ G2 至少使用一个固定测试 executable 验证：
 - [x] 新增 `SandboxedToolExecutorPort`、ToolExecutionManifest/Result Schema 和 Fake Adapter。
 - [x] 保持 `AgentRuntimePort`、Agent Loop、Tool Policy、Approval 和 Execution Ledger 的现有职责边界。
 - [x] 将现有 Tool 路由为显式 `host` 或 `sandboxed` 两类落点；缺少 Native Sandbox Executor 时 fail-closed。
-- [x] 用 Fake 验证身份、权限摘要、固定 argv、路径、环境、网络、超时、取消、幂等重放和结果提交边界。
+- [x] 用 Fake 验证 Host 编译的身份、权限摘要、固定 executable/argv、路径、环境、网络、超时、取消、幂等重放、Manifest 不可变性和结果元数据提交边界。
 
 以上仅是离线 Contract 证据，不代表 G2 已通过。macOS Seatbelt Adapter、真实进程树隔离、攻击回归和 Sandbox 输出文件实体验证仍属于 Slice 2。
 

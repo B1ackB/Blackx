@@ -15,8 +15,7 @@ export class FakeSandboxedToolExecutor implements SandboxedToolExecutorPort {
 	) {}
 
 	async execute(manifest: ToolExecutionManifest, signal: AbortSignal): Promise<ToolExecutionResult> {
-		const captured = structuredClone(manifest);
-		this.manifests.push(captured);
-		return this.handler(captured, signal);
+		this.manifests.push(manifest);
+		return this.handler(manifest, signal);
 	}
 }

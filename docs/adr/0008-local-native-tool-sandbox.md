@@ -9,7 +9,7 @@
 
 ADR-0007 将整个 Agent execution slice 放入远端 Linux gVisor Sandbox。这适合托管多租户云服务，但要求独立 Runner、Gateway 和部署基础设施，不符合当前希望采用 Claude Code/Codex 式“安装后在用户现有电脑上运行”的产品形态。
 
-当前 `sandboxMode` 只有逻辑权限校验，`tool.execute()` 仍在 Node.js Host 进程内运行，因此本地模式仍需要操作系统强制的文件、网络和进程边界。
+当前 `sandboxMode` 只有逻辑权限校验。Host built-in Tool 仍在 Node.js Host 进程内运行；显式 `sandboxed` Tool 已具备 Port 与 Fake Contract，但尚无真实 OS Adapter，因此本地模式仍需要操作系统强制的文件、网络和进程边界。
 
 ## 决定
 
@@ -17,6 +17,7 @@ ADR-0007 将整个 Agent execution slice 放入远端 Linux gVisor Sandbox。这
 - Agent Loop、Context、Skill、Session、Provider Adapter、RunEngine、Queue、Policy、Approval、Execution Ledger、Artifact、Evaluation 与 Audit 留在受信的 Local Host 进程。
 - 模型输出始终作为不可信输入。模型只能请求结构化 Tool Call，不能选择 executable、Sandbox Profile、路径、网络、环境变量、预算或审批结果。
 - 新增行业无关 `SandboxedToolExecutorPort`。所有会启动外部进程、解析未可信复杂文件或加载第三方二进制的 Tool，必须通过它进入短生命周期 OS Sandbox。
+- 受信 Host 从注册 Tool 的固定版本、executable、环境、网络和资源上限，以及已校验输入产生的 argv/路径，编译并冻结通用 `ToolExecutionManifest`；平台 Executor 只将其编译为 Seatbelt/bubblewrap Profile 并执行，不能重新决定身份、权限、Approval 或预算。
 - macOS 首个 Adapter 使用系统自带 Seatbelt；Linux/WSL2 后续 Adapter 使用 bubblewrap + seccomp。平台 Adapter 共用同一 Contract，Agent Loop 不出现平台条件分支。
 - 外部进程使用固定 executable 与 argv 数组启动，设置 `shell: false`；默认无网络、最小路径、显式环境变量白名单、超时、输出限制和进程树清理。
 - Sandbox 不可用、Profile 编译失败或权限无法执行时 fail-closed，不自动降级为 unsandboxed execution。
@@ -48,7 +49,7 @@ ADR-0007 将整个 Agent execution slice 放入远端 Linux gVisor Sandbox。这
 
 ## 验证
 
-- Fake Contract 覆盖固定 executable/argv、路径、环境、网络、超时、取消和结构化 Failure。
+- Fake Contract 覆盖 Host 编译的固定 executable/argv、路径、环境、网络、Manifest 不可变性、超时、取消和结构化 Failure。
 - macOS Seatbelt 回归覆盖 Home/SSH/其他 Workspace 读取、Workspace 外写入、默认拒绝网络、子进程继承、路径穿越、超大输出、超时和孤儿进程。
 - M2 Requirement Brief 正式链路通过 Native Sandbox 执行 `asset_metadata_inspect`，并在 pause/resume、重复投递与五类 Crash 下只提交一个 Artifact Version。
 - M0、M1、M2 固定 Eval、权限、租户、类型检查和构建保持通过。
