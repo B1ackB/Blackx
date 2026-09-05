@@ -1,4 +1,5 @@
 import type { AgentModelProvider, AgentTool } from "../../src/agent/contracts";
+import type { SandboxedToolExecutorPort } from "../../src/agent/sandbox";
 import { SkillRegistry } from "../../src/agent/skills";
 import type { AgentSessionStore, ContextSnapshotStore } from "../../src/agent/state";
 import { printSkills } from "../../src/print/skills";
@@ -25,6 +26,7 @@ export class FakeAgentRuntime extends BlackxAgentRuntime {
 		sessions?: AgentSessionStore;
 		snapshots?: ContextSnapshotStore;
 		tools?: readonly AgentTool[];
+		sandboxedToolExecutor?: SandboxedToolExecutorPort;
 		resolveImageAttachment?: BlackxAgentRuntimeOptions["resolveImageAttachment"];
 	} = {}) {
 		super({ provider: fakeProvider, skills: new SkillRegistry([...printSkills, ...manufacturingSkills]), ...options });

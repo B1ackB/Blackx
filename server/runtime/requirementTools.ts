@@ -1,4 +1,4 @@
-import type { AgentTool } from "../../src/agent/contracts";
+import type { AgentHostTool } from "../../src/agent/contracts";
 import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
 import { requirementBriefFixtures } from "../../src/manufacturing/requirementBrief.fixtures";
 import { FileConversationAttachmentStore } from "./conversationAttachments";
@@ -13,7 +13,7 @@ function validInput(value: unknown): value is { sourceId: string } {
 		"sourceId" in value && typeof value.sourceId === "string" && value.sourceId in sources;
 }
 
-export const projectSourceReadTool: AgentTool = {
+export const projectSourceReadTool: AgentHostTool = {
 	name: "project_source_read",
 	description: "Read one customer Brief from the fixed M2 Requirement Brief evaluation corpus.",
 	inputSchema: {
@@ -22,6 +22,7 @@ export const projectSourceReadTool: AgentTool = {
 		required: ["sourceId"],
 		additionalProperties: false,
 	},
+	execution: "host",
 	risk: "read",
 	idempotent: true,
 	timeoutMs: 1_000,
@@ -36,7 +37,7 @@ export const projectSourceReadTool: AgentTool = {
 export function createProjectSourceReadTool(
 	engine: ProposalRunEngine,
 	attachments?: FileConversationAttachmentStore,
-): AgentTool {
+): AgentHostTool {
 	return {
 		name: "project_source_read",
 		description: "Read the tenant-scoped customer brief and selected industry for the current Requirement Brief Run.",
@@ -46,6 +47,7 @@ export function createProjectSourceReadTool(
 			required: ["sourceId"],
 			additionalProperties: false,
 		},
+		execution: "host",
 		risk: "read",
 		idempotent: true,
 		timeoutMs: 1_000,

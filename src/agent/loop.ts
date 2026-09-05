@@ -8,6 +8,7 @@ import type {
 	AgentToolApprovalPort,
 	AgentToolAuditPort,
 	AgentToolExecution,
+	AgentToolExecutionContext,
 	AgentToolExecutionRecord,
 	AgentToolExecutionStore,
 	AgentToolFailureCode,
@@ -16,6 +17,15 @@ import type {
 import { AgentCoreError } from "./contracts";
 import { compactSummaryPrefix, ContextEngine } from "./context";
 import { AgentHooks } from "./hooks";
+import {
+	compileToolExecutionManifest,
+	validToolExecutionManifest,
+	validToolExecutionResult,
+} from "./sandbox";
+import type {
+	SandboxedToolExecutorPort,
+	ToolExecutionResult,
+} from "./sandbox";
 import { ModelContextSummarizer } from "./summarizer";
 
 const emptyUsage = (): AgentUsage => ({
@@ -68,6 +78,20 @@ function validToolInput(tool: AgentTool, input: unknown): boolean {
 	}
 }
 
+function sandboxFailure(status: Exclude<ToolExecutionResult["status"], "succeeded">): {
+	code: AgentToolFailureCode;
+	message: string;
+} {
+	switch (status) {
+		case "timed_out": return { code: "tool_timeout", message: "Sandboxed Tool execution timed out" };
+		case "cancelled": return { code: "tool_cancelled", message: "Sandboxed Tool execution was cancelled" };
+		case "resource_exhausted": return { code: "tool_resource_exhausted", message: "Sandboxed Tool exceeded a resource limit" };
+		case "policy_denied": return { code: "tool_sandbox_policy_denied", message: "Sandbox policy denied Tool execution" };
+		case "sandbox_unavailable": return { code: "tool_sandbox_unavailable", message: "Native Tool Sandbox is unavailable" };
+		case "failed": return { code: "tool_execution_failed", message: "Sandboxed Tool execution failed" };
+	}
+}
+
 function nestedCode(error: unknown): string | undefined {
 	let current = error;
 	for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
@@ -114,6 +138,7 @@ export interface AgentLoopOptions {
 	approval?: AgentToolApprovalPort;
 	audit?: AgentToolAuditPort;
 	executions?: AgentToolExecutionStore;
+	sandboxedToolExecutor?: SandboxedToolExecutorPort;
 	maxIterations?: number;
 	maxToolExecutions?: number;
 	maxInputTokens?: number;
@@ -426,31 +451,113 @@ export class AgentLoop {
 								const toolSignal = signal
 									? AbortSignal.any([signal, timeout.signal])
 									: timeout.signal;
-								const result = toolOutput(
-									await abortable(tool.execute(call.input, {
-										tenantId: input.tenantId,
-										workspaceId: input.workspaceId,
-										runId: input.runId,
-										stageId: input.stageId,
-										actorId: input.actorId,
-										executionId: input.executionId,
-										toolCallId: call.id,
-										idempotencyKey,
-										approvalId,
-										signal: toolSignal,
-									}), toolSignal),
-									tool.maxResultChars,
-								);
-								output = result.text;
-								resultTruncated = result.truncated;
-								status = "succeeded";
+								const executionContext: AgentToolExecutionContext = {
+									tenantId: input.tenantId,
+									workspaceId: input.workspaceId,
+									runId: input.runId,
+									stageId: input.stageId,
+									actorId: input.actorId,
+									executionId: input.executionId,
+									toolCallId: call.id,
+									idempotencyKey,
+									approvalId,
+									signal: toolSignal,
+								};
+								if (tool.execution === "host") {
+									const result = toolOutput(
+										await abortable(tool.execute(call.input, executionContext), toolSignal),
+										tool.maxResultChars,
+									);
+									output = result.text;
+									resultTruncated = result.truncated;
+									status = "succeeded";
+								} else if (!this.options.sandboxedToolExecutor) {
+									failureCode = "tool_sandbox_unavailable";
+									status = "failed";
+									output = toolFailure(failureCode, "Native Tool Sandbox is unavailable");
+								} else {
+									const sandboxContext = {
+										...executionContext,
+										sandboxAttemptId: crypto.randomUUID(),
+									};
+									const invocation = tool.createInvocation(call.input, sandboxContext);
+									const persistentWriteDenied = invocation.paths.writable.length > 0 &&
+										(tool.risk === "read" || input.policy.sandboxMode !== "workspace-write");
+									if (persistentWriteDenied) {
+										failureCode = "tool_sandbox_policy_denied";
+										status = "denied";
+										output = toolFailure(failureCode, "Sandboxed Tool requested persistent writes outside its Host policy");
+									} else {
+										const manifest = compileToolExecutionManifest({
+											attemptId: sandboxContext.sandboxAttemptId,
+											tenantId: sandboxContext.tenantId,
+											workspaceId: sandboxContext.workspaceId,
+											runId: sandboxContext.runId,
+											stageId: sandboxContext.stageId,
+											executionId: sandboxContext.executionId,
+											toolCallId: sandboxContext.toolCallId,
+											tool: { name: tool.name, version: tool.version },
+											command: {
+												executable: tool.executable,
+												argv: invocation.argv,
+												workingDirectory: invocation.workingDirectory,
+											},
+											paths: invocation.paths,
+											environment: tool.sandbox.environment,
+											network: tool.sandbox.network,
+											limits: { timeoutMs: tool.timeoutMs, ...tool.sandbox.limits },
+											idempotencyKey: sandboxContext.idempotencyKey,
+											approvalId: sandboxContext.approvalId,
+										});
+										if (!validToolExecutionManifest(manifest)) {
+											failureCode = "tool_sandbox_policy_denied";
+											status = "denied";
+											output = toolFailure(failureCode, "Sandboxed Tool manifest failed Host validation");
+										} else {
+											const sandboxResult = await abortable(
+												this.options.sandboxedToolExecutor.execute(manifest, toolSignal),
+												toolSignal,
+											);
+											if (!validToolExecutionResult(sandboxResult, manifest)) {
+												failureCode = "tool_execution_failed";
+												status = tool.risk === "read" ? "failed" : "unknown";
+												output = toolFailure(failureCode, "Sandboxed Tool result failed Host validation");
+											} else if (sandboxResult.status === "succeeded") {
+												const result = toolOutput(sandboxResult, tool.maxResultChars);
+												output = result.text;
+												resultTruncated = result.truncated;
+												status = "succeeded";
+											} else {
+												const failure = sandboxFailure(sandboxResult.status);
+												failureCode = failure.code;
+												status = sandboxResult.status === "policy_denied"
+													? "denied"
+													: sandboxResult.status === "sandbox_unavailable" || tool.risk === "read"
+														? "failed"
+														: "unknown";
+												output = toolFailure(failure.code, failure.message);
+											}
+										}
+									}
+								}
 							}
 						} catch (error) {
 							if (signal?.aborted) throw signal.reason;
 							if (error instanceof AgentCoreError) throw error;
-							failureCode = timeout.signal.aborted ? "tool_timeout" : "tool_execution_failed";
+							failureCode = timeout.signal.aborted
+								? "tool_timeout"
+								: tool.execution === "sandboxed"
+									? "tool_sandbox_unavailable"
+									: "tool_execution_failed";
 							status = tool.risk === "read" ? "failed" : "unknown";
-							output = toolFailure(failureCode, failureCode === "tool_timeout" ? "Tool execution timed out" : "Tool execution failed");
+							output = toolFailure(
+								failureCode,
+								failureCode === "tool_timeout"
+									? "Tool execution timed out"
+									: failureCode === "tool_sandbox_unavailable"
+										? "Native Tool Sandbox failed"
+										: "Tool execution failed",
+							);
 						} finally {
 							if (timer) clearTimeout(timer);
 						}

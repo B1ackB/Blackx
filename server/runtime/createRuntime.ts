@@ -1,13 +1,16 @@
+import { resolve } from "node:path";
 import { SkillRegistry } from "../../src/agent/skills";
 import { printSkills } from "../../src/print/skills";
 import { manufacturingSkills } from "../../src/manufacturing/skills";
 import type { AgentTool } from "../../src/agent/contracts";
+import type { SandboxedToolExecutorPort } from "../../src/agent/sandbox";
 import type { AgentRuntimePort } from "../../src/runtime/contracts";
 import { AnthropicMessagesClient } from "../anthropic/client";
 import { BlackxAgentRuntime, type BlackxAgentRuntimeOptions } from "./agentRuntime";
 import { AnthropicModelProvider } from "./anthropicModelProvider";
 import { FakeAgentRuntime } from "./fakeAgentRuntime";
 import { FileAgentStateStore } from "./fileAgentStateStore";
+import { MacOsSeatbeltSandboxedToolExecutor } from "./macOsSeatbeltSandboxedToolExecutor";
 
 export interface RuntimeServices {
 	runtime: AgentRuntimePort;
@@ -16,6 +19,7 @@ export interface RuntimeServices {
 
 export interface RuntimeServicesOptions {
 	tools?: readonly AgentTool[];
+	sandboxedToolExecutor?: SandboxedToolExecutorPort;
 	autonomouslyApprovedTools?: ReadonlySet<string>;
 	resolveImageAttachment?: BlackxAgentRuntimeOptions["resolveImageAttachment"];
 }
@@ -41,12 +45,18 @@ export function createRuntime(
 ): RuntimeServices {
   const mode = environment.BLACKX_RUNTIME_MODE ?? "fake";
 	const state = new FileAgentStateStore(environment.BLACKX_AGENT_STATE_PATH ?? ".blackx-data/agent");
+	const sandboxedToolExecutor = options.sandboxedToolExecutor ?? (process.platform === "darwin"
+		? new MacOsSeatbeltSandboxedToolExecutor({
+			workspaceRoot: resolve(environment.BLACKX_WORKSPACE_ROOT ?? "."),
+		})
+		: undefined);
   if (mode === "fake") {
 		return {
 			runtime: new FakeAgentRuntime({
 				sessions: state,
 				snapshots: state,
 				tools: options.tools,
+				sandboxedToolExecutor,
 				resolveImageAttachment: options.resolveImageAttachment,
 			}),
 			state,
@@ -71,6 +81,7 @@ export function createRuntime(
 				),
 				skills: new SkillRegistry([...printSkills, ...manufacturingSkills]),
 				tools: options.tools,
+				sandboxedToolExecutor,
 				resolveImageAttachment: options.resolveImageAttachment,
 				approval: {
 					authorize: async (request) => options.autonomouslyApprovedTools?.has(request.tool)

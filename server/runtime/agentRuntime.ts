@@ -243,6 +243,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				approval: this.options.approval,
 				audit: this.options.audit,
 				executions: this.executions,
+				sandboxedToolExecutor: this.options.sandboxedToolExecutor,
 				maxIterations: this.options.maxIterations,
 				maxToolExecutions: this.options.maxToolExecutions,
 				maxInputTokens: this.options.maxInputTokens,
