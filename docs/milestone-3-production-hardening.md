@@ -210,7 +210,7 @@ G2 至少使用一个固定测试 executable 验证：
 - [x] 将现有 Tool 路由为显式 `host` 或 `sandboxed` 两类落点；缺少 Native Sandbox Executor 时 fail-closed。
 - [x] 用 Fake 验证 Host 编译的身份、权限摘要、固定 executable/argv、路径、环境、网络、超时、取消、幂等重放、Manifest 不可变性和结果元数据提交边界。
 
-以上仅是离线 Contract 证据，不代表 G2 已通过。macOS Seatbelt Adapter、真实进程树隔离、攻击回归和 Sandbox 输出文件实体验证仍属于 Slice 2。
+以上 Slice 1 项目仍只构成离线 Contract 证据。真实 Seatbelt Adapter、进程组隔离、攻击回归和 Sandbox 输出文件实体验证记录在下方 Slice 2；两者合并后仍不代表 G2 已全部通过。
 
 ### Slice 2：macOS Seatbelt Adapter
 
