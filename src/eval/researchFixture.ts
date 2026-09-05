@@ -156,6 +156,6 @@ export function scoreResearchTurn(result: RuntimeTurnResult): ResearchEvalReport
 		passed: checks.every((check) => check.passed),
 		checks,
 		adapter: result.adapter,
-		usage: result.usage,
+		...(result.usage ? { usage: result.usage } : {}),
 	};
 }

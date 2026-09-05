@@ -45,8 +45,10 @@ const eventTypes = new Set([
 	"approval.resolved",
 	"artifact.marked_stale",
 	"approval.superseded",
+	"stage.input_required",
 	"stage.revision_required",
 	"stage.restarted",
+	"stage.cancelled",
 	"stage.completed",
 ]);
 
@@ -89,12 +91,14 @@ function isEventData(value: Record<string, unknown>): boolean {
 		case "run.created":
 			return true;
 		case "stage.started":
+		case "stage.input_required":
 		case "stage.revision_required":
 		case "stage.restarted":
+		case "stage.cancelled":
 		case "stage.completed":
-			return value.stage === "proposal";
+			return isId(value.stage);
 		case "stage.execution_requested":
-			return value.stage === "proposal" && isId(value.jobId);
+			return isId(value.stage) && isId(value.jobId);
 		case "fact.version_recorded":
 			return (
 				isString(value.factKey) &&
@@ -104,7 +108,7 @@ function isEventData(value: Record<string, unknown>): boolean {
 				["suggested", "unverified", "verified", "rejected"].includes(
 					String(value.status),
 				) &&
-				["user_input", "model_output", "enterprise_source", "human_confirmation"].includes(
+				["user_input", "source_document", "model_output", "enterprise_source", "human_confirmation"].includes(
 					String(value.sourceType),
 				) &&
 				isString(value.sourceRef)

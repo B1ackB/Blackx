@@ -63,6 +63,7 @@ function key(scope: AgentSessionScope): string {
 function cloneMessages(messages: readonly AgentMessage[]): AgentMessage[] {
 	return messages.map((message) => ({
 		...message,
+		attachments: message.attachments?.map((attachment) => ({ ...attachment })),
 		toolCalls: message.toolCalls?.map((call) => ({ ...call })),
 		...(message.providerState === undefined
 			? {}

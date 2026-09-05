@@ -13,6 +13,7 @@
     "eval:online": "node --import tsx eval/run.ts --online",
     "eval:m1": "node --import tsx eval/m1Research.ts",
     "eval:m1-online": "node --import tsx eval/m1Research.ts --online",
+	"eval:m2": "node --import tsx eval/m2RequirementBrief.ts",
     "eval:anthropic-contract": "node --import tsx eval/anthropicContract.ts",
     "check": "npm run test && npm run build"
   },

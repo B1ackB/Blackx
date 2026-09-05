@@ -1,11 +1,11 @@
 # Blackx 产品交互与信息责任模型
 
-状态：Accepted
-更新日期：2026-08-26
+状态：Print Domain Reference / M2 Shared Interaction Accepted
+更新日期：2026-09-04
 
 ## 1. 产品定位
 
-Blackx 是以自研 Agent Core 驱动的包装行业 Agent，不是一张要求客户填写全部印刷工程参数的表单。
+Blackx 是以自研 Agent Core 驱动的定制制造需求与交付物 Agent，不是一张要求客户填写全部工程参数的表单。M2 首批面向印刷、包装和定制家具企业的售前/跟单人员，统一生成 Requirement Brief；本文件后续的包装字段继续作为 Print Domain Pack 的详细参考，Furniture 遵守相同的来源、确认和最少提问原则。
 
 用户表达业务目标、上传已有资料并确认关键约束；Blackx 使用包装行业知识、权威标准、企业数据和确定性工具完成调查、提出方案、解释风险并生成可追溯 Artifact。Blackx Agent Core 负责通用 Agent Loop、Session、模型调用、Hook、Tool、Context、Skill 和 Compact，不承载包装行业条件分支。
 

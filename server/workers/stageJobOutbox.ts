@@ -14,13 +14,13 @@ export interface ProposalStageJobOptions {
 	maxSlices?: number;
 }
 
-function digest(command: ProposalWorkerCommand): string {
+function digest(command: ProposalWorkerCommand, stageId: string): string {
 	return createHash("sha256")
 		.update(JSON.stringify([
 			command.tenantId,
 			command.workspaceId,
 			command.runId,
-			"proposal",
+			stageId,
 			command.commandId,
 		]))
 		.digest("hex")
@@ -31,7 +31,7 @@ export function proposalStageJob(
 	command: ProposalWorkerCommand,
 	options: ProposalStageJobOptions = {},
 ): StageJobDispatch {
-	const id = digest(command);
+	const id = digest(command, "proposal");
 	return {
 		...command,
 		jobId: `proposal-${id}`,
@@ -57,10 +57,32 @@ export class StageJobOutbox {
 	) {}
 
 	requestProposal(command: ProposalWorkerCommand): OutboxMessage {
-		const payload = proposalStageJob({
+		return this.requestStage(command, {
+			stageId: "proposal",
+			jobPrefix: "proposal",
+		});
+	}
+
+	requestStage(
+		command: ProposalWorkerCommand,
+		input: {
+			stageId: string;
+			jobPrefix: string;
+			payload?: Record<string, unknown>;
+		},
+	): OutboxMessage {
+		const id = digest(command, input.stageId);
+		const payload: StageJobDispatch = {
 			...command,
 			expectedVersion: command.expectedVersion + 1,
-		}, this.options);
+			jobId: `${input.jobPrefix}-${id}`,
+			stageId: input.stageId,
+			sessionId: `${input.jobPrefix}-${id}`,
+			priority: this.options.priority ?? 0,
+			maxFailures: this.options.maxFailures ?? 5,
+			maxSlices: this.options.maxSlices ?? 32,
+			payload: input.payload,
+		};
 		return this.engine.requestProposalJob(
 			{ ...command, actorId: "blackx-run-engine" },
 			{

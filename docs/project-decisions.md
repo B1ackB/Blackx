@@ -84,9 +84,9 @@ Adapter 必须双向映射并测试：
 
 不得把 Anthropic 请求/响应类型暴露给 RunEngine、Artifact、Workflow 或 Print Schema。Provider Adapter 必须通过 Model Provider Contract Test；协议差异不得泄漏进 Agent Loop。
 
-## D6：Blackx 采用“行业版 Codex”的最少提问模式
+## D6：Print Domain Pack 采用最少提问模式
 
-Blackx 的核心体验是让用户表达包装业务目标，由系统调查标准、企业数据和工具证据后完成行业化工作，而不是把一张完整印刷工程参数表交给用户。
+本决策当前约束 Print Domain Pack；D9 将相同的来源、确认和最少提问原则扩展到定制制造 Requirement Brief。用户表达包装业务目标后，由系统调查标准、企业数据和工具证据，而不是把一张完整印刷工程参数表交给用户。
 
 - 用户负责表达或确认内容物、用途、目标保质期、容量/尺寸、数量、市场、预算、交期和品牌硬约束等不可可靠推断的信息。
 - Blackx 先从自然语言、附件、历史项目和企业系统提取 Fact，只对会阻断阶段或显著改变方案的缺失项提问。
@@ -113,13 +113,37 @@ Enterprise Layer 与 Print Domain Pack 边界保持不变。Agent Session 只作
 
 M1 定义为 `Durable Single-Agent Runtime`，使用行业无关 Fixture 验证排队、execution slice、恢复、幂等、Fact/Artifact、Evaluation 和 Approval。M2 定义为首个真实产品纵向闭环；具体产品想法冻结前，以 `Research Task → Evidence-backed Report Artifact` 作为参考 Fixture。
 
-Print Proposal、封口袋标准和已有实现继续作为 Print Domain Pack 与回归资产，但不再阻塞通用 M1/M2。上层 RSI 暂不实现；只有 M2 形成稳定 Baseline、M3 形成生产控制面后，才能以隔离 Eval、审批、Canary 和回滚方式启动。
+Print Proposal、封口袋标准和已有实现继续作为 Print Domain Pack 与回归资产，但不再阻塞通用 M1/M2。上层 RSI 暂不实现；只有 M2 形成稳定 Baseline、M3 形成本地安全控制边界后，才能以隔离 Eval、审批、Canary 和回滚方式启动。
 
 M1 不要求多主机分布式存储。生产阶段优先通过 Port 接入 PostgreSQL、S3-compatible Object Store 和成熟 Queue；Blackx 不自研分布式数据库、共识协议或跨组件全局事务。
+
+## D9：M2 面向定制制造售前需求澄清
+
+状态：Accepted
+确认日期：2026-09-04
+
+M2 首个目标用户冻结为印刷、包装和定制家具企业的售前/跟单人员；首个高频任务是把客户 Brief 和授权资料整理为带来源、状态、版本、缺口和下一步动作的 `requirement-brief.v1`。
+
+Print 与 Furniture 使用同一 Product Workflow、Artifact Contract、Evaluation 和 Approval Gate，行业必填字段与知识能力通过 Domain Pack 接入。M2 不承诺自动报价、生产参数或生产文件；只有不存在阻断字段且所有必填 Fact 已由权威来源或人工确认时，Artifact Version 才具备审批资格。完整范围与 Gate 见 [`milestone-2-product-slice.md`](milestone-2-product-slice.md)。
+
+## D10：M2 工程冻结与真实用户验证债务分离
+
+状态：Accepted
+确认日期：2026-09-05
+
+M2 的 Product Contract、正式 Queue/Worker 纵向链路、Artifact/Evaluation/Approval、恢复、权限、UI、跨 Run 指标和固定 Eval 已完成并冻结。产品负责人接受使用明确标注的合成售前样例完成工程基线，不把合成角色或预期判断表示为真实用户研究。
+
+Print/Furniture 真实目标用户没有参与，因此用户可用性、返工改善、付费意愿和长期质量趋势均保持未验证。该 Validation Debt 不阻塞 Native Tool Sandbox、本地权限、Secret 和备份恢复等安全加固，但在对外试点、产品价值声明或 RSI 之前必须补验；真实反馈否定交付价值时重新打开 M2 Product Validation。
+
+## D11：M3 改为本地 Agent 与原生 Tool Sandbox
+
+状态：Accepted
+确认日期：2026-09-05
+
+M3 采用 Claude Code/Codex 风格的本地运行模式：Agent Loop、Context、Skill、Provider、Workflow 和权威状态留在用户设备的受信 Host；外部 Tool/Command 子进程通过原生 OS Sandbox 执行。macOS 首先使用 Seatbelt，不要求 Docker 或额外机器；托管云 Runner、gVisor、Kubernetes、MicroVM 和生产分布式存储不属于 M3。完整决定见 [`ADR-0008`](adr/0008-local-native-tool-sandbox.md)。
 
 ## 尚未确认
 
 - Node.js、包管理器与 Monorepo 工具的固定版本
-- M2 的首个真实用户、任务、Tool、Artifact 和完成 Evaluator
-- M3 的 PostgreSQL、对象存储和 Queue 生产 Adapter 选型
+- 未来托管云的 PostgreSQL、对象存储、Queue 与 Sandbox Runner 选型
 - OpenAI 与 Anthropic Online Eval 使用的具体模型和预算门槛

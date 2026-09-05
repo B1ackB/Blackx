@@ -1,8 +1,9 @@
-import type { AgentModelProvider } from "../../src/agent/contracts";
+import type { AgentModelProvider, AgentTool } from "../../src/agent/contracts";
 import { SkillRegistry } from "../../src/agent/skills";
 import type { AgentSessionStore, ContextSnapshotStore } from "../../src/agent/state";
 import { printSkills } from "../../src/print/skills";
-import { BlackxAgentRuntime } from "./agentRuntime";
+import { manufacturingSkills } from "../../src/manufacturing/skills";
+import { BlackxAgentRuntime, type BlackxAgentRuntimeOptions } from "./agentRuntime";
 
 const fakeProvider: AgentModelProvider = {
 	async generate(request) {
@@ -20,8 +21,13 @@ const fakeProvider: AgentModelProvider = {
 };
 
 export class FakeAgentRuntime extends BlackxAgentRuntime {
-	constructor(options: { sessions?: AgentSessionStore; snapshots?: ContextSnapshotStore } = {}) {
-		super({ provider: fakeProvider, skills: new SkillRegistry(printSkills), ...options });
+	constructor(options: {
+		sessions?: AgentSessionStore;
+		snapshots?: ContextSnapshotStore;
+		tools?: readonly AgentTool[];
+		resolveImageAttachment?: BlackxAgentRuntimeOptions["resolveImageAttachment"];
+	} = {}) {
+		super({ provider: fakeProvider, skills: new SkillRegistry([...printSkills, ...manufacturingSkills]), ...options });
 	}
 
 	override async health() {

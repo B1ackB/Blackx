@@ -8,6 +8,14 @@ export type AnthropicAssistantContentBlock =
 
 export type AnthropicContentBlock =
 	| AnthropicAssistantContentBlock
+	| {
+		type: "image";
+		source: {
+			type: "base64";
+			media_type: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+			data: string;
+		};
+	}
 	| { type: "tool_result"; tool_use_id: string; content: string };
 
 export interface AnthropicMessageRequest {

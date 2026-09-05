@@ -97,6 +97,17 @@ function toAnthropicRequest(request: AgentModelRequest, model: string, maxTokens
 		const blocks: AnthropicContentBlock[] = message.content
 			? [{ type: "text", text: message.content }]
 			: [];
+		for (const attachment of message.attachments ?? []) {
+			if (!attachment.data) throw new Error(`Image attachment is unresolved: ${attachment.sourceRef}`);
+			blocks.push({
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: attachment.mediaType,
+					data: attachment.data,
+				},
+			});
+		}
 		for (const call of message.toolCalls ?? []) blocks.push({
 			type: "tool_use",
 			id: call.id,

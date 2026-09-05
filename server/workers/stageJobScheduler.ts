@@ -8,15 +8,10 @@ import {
 	type StageJobQueueMetrics,
 } from "../../src/enterprise/stageJobQueue";
 import { RuntimeFailure } from "../../src/runtime/contracts";
-import {
-	ProposalWorker,
-	type ProposalWorkerCommand,
-} from "./proposalWorker";
-import { proposalStageJob } from "./stageJobOutbox";
 
 export type StageJobRunResult =
 	| { status: "idle" | "busy" }
-	| { status: "completed" | "paused" | "retry_scheduled" | "dead_letter"; job: StageJob };
+	| { status: "completed" | "paused" | "retry_scheduled" | "dead_letter" | "cancelled"; job: StageJob };
 
 export interface StageJobHandlerResult {
 	status: "completed" | "paused";
@@ -24,15 +19,12 @@ export interface StageJobHandlerResult {
 	contextSnapshotId?: string;
 }
 
-export type StageJobHandler = (lease: StageJobLease) => Promise<StageJobHandlerResult>;
+export type StageJobHandler = (lease: StageJobLease, signal: AbortSignal) => Promise<StageJobHandlerResult>;
 
 export interface StageJobSchedulerOptions {
 	workerId: string;
 	leaseMs?: number;
 	pollIntervalMs?: number;
-	maxFailures?: number;
-	maxSlices?: number;
-	priority?: number;
 	heartbeatMs?: number;
 	handlers?: Readonly<Record<string, StageJobHandler>>;
 	dispatchOutbox?: () => unknown;
@@ -67,28 +59,22 @@ function safeFailure(error: unknown): { code: string; message: string; retryable
 export class StageJobScheduler {
 	private readonly leaseMs: number;
 	private readonly pollIntervalMs: number;
-	private readonly maxFailures: number;
-	private readonly maxSlices: number;
-	private readonly priority: number;
 	private readonly heartbeatMs: number;
 	private running = false;
 	private stopRequested = false;
 	private timer?: NodeJS.Timeout;
+	private readonly activeJobs = new Map<string, AbortController>();
 
 	constructor(
 		private readonly queue: StageJobQueue,
-		private readonly proposalWorker: ProposalWorker,
 		private readonly options: StageJobSchedulerOptions,
 	) {
 		this.leaseMs = options.leaseMs ?? 135_000;
 		this.pollIntervalMs = options.pollIntervalMs ?? 250;
-		this.maxFailures = options.maxFailures ?? 5;
-		this.maxSlices = options.maxSlices ?? 32;
-		this.priority = options.priority ?? 0;
 		this.heartbeatMs = options.heartbeatMs ?? Math.max(250, Math.floor(this.leaseMs / 3));
-		if (![this.leaseMs, this.pollIntervalMs, this.maxFailures, this.maxSlices, this.heartbeatMs].every(
+		if (![this.leaseMs, this.pollIntervalMs, this.heartbeatMs].every(
 			(value) => Number.isInteger(value) && value > 0,
-		) || this.heartbeatMs >= this.leaseMs || !Number.isInteger(this.priority) || options.workerId.length === 0) {
+		) || this.heartbeatMs >= this.leaseMs || options.workerId.length === 0) {
 			throw new Error("Stage Job Scheduler configuration is invalid");
 		}
 	}
@@ -101,6 +87,14 @@ export class StageJobScheduler {
 		return job?.tenantId === scope.tenantId && job.workspaceId === scope.workspaceId
 			? job
 			: undefined;
+	}
+
+	jobsForRun(scope: { tenantId: string; workspaceId: string; runId: string }): StageJob[] {
+		return this.queue.list().filter((job) =>
+			job.tenantId === scope.tenantId &&
+			job.workspaceId === scope.workspaceId &&
+			job.runId === scope.runId,
+		);
 	}
 
 	metrics(scope: { tenantId: string; workspaceId: string }): StageJobQueueMetrics {
@@ -125,12 +119,15 @@ export class StageJobScheduler {
 		return this.queue.redrive(jobId, request);
 	}
 
-	enqueueProposal(command: ProposalWorkerCommand): StageJob {
-		return this.queue.enqueue(proposalStageJob(command, {
-			priority: this.priority,
-			maxFailures: this.maxFailures,
-			maxSlices: this.maxSlices,
-		}));
+	cancel(
+		jobId: string,
+		scope: { tenantId: string; workspaceId: string; runId: string },
+	): StageJob | undefined {
+		const job = this.getJob(jobId, scope);
+		if (!job || job.runId !== scope.runId) return undefined;
+		const cancelled = this.queue.cancel(jobId, scope);
+		this.activeJobs.get(jobId)?.abort("stage_job_cancelled");
+		return cancelled;
 	}
 
 	async runNext(): Promise<StageJobRunResult> {
@@ -152,6 +149,8 @@ export class StageJobScheduler {
 			}
 
 			let activeLease = lease;
+			const controller = new AbortController();
+			this.activeJobs.set(lease.jobId, controller);
 			let heartbeatError: unknown;
 			const heartbeat = setInterval(() => {
 				try {
@@ -162,11 +161,13 @@ export class StageJobScheduler {
 			}, this.heartbeatMs);
 			let result: StageJobHandlerResult;
 			try {
-				result = await handler(activeLease);
+				result = await handler(activeLease, controller.signal);
 			} finally {
 				clearInterval(heartbeat);
 			}
 			if (heartbeatError) throw heartbeatError;
+			const current = this.queue.get(activeLease.jobId);
+			if (current?.status === "cancelled") return { status: "cancelled", job: current };
 			if (result.status === "paused") {
 				if (!result.sessionId) {
 					throw new RuntimeFailure("invalid_output", "Paused Stage Job omitted sessionId", false);
@@ -180,6 +181,8 @@ export class StageJobScheduler {
 			return { status: "completed", job: this.queue.ack(activeLease) };
 		} catch (error) {
 			if (!lease || error instanceof StageJobQueueError && error.code === "lease_lost") throw error;
+			const current = this.queue.get(lease.jobId);
+			if (current?.status === "cancelled") return { status: "cancelled", job: current };
 			const failure = safeFailure(error);
 			const delayMs = failure.retryable
 				? Math.min(30_000, 250 * 2 ** lease.failureCount)
@@ -190,23 +193,13 @@ export class StageJobScheduler {
 				job,
 			};
 		} finally {
+			if (lease) this.activeJobs.delete(lease.jobId);
 			this.running = false;
 		}
 	}
 
 	private handlerFor(lease: StageJobLease): StageJobHandler | undefined {
-		if (lease.stageId !== "proposal") return this.options.handlers?.[lease.stageId];
-		return async (job) => this.proposalWorker.executeSlice(
-			{
-				tenantId: job.tenantId,
-				workspaceId: job.workspaceId,
-				runId: job.runId,
-				commandId: job.commandId,
-				correlationId: job.correlationId,
-				expectedVersion: job.expectedVersion,
-			},
-			{ sessionId: job.sessionId, resume: "if-present" },
-		);
+		return this.options.handlers?.[lease.stageId];
 	}
 
 	start(): () => void {

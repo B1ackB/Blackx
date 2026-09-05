@@ -1,4 +1,8 @@
-import type { AgentToolExecutionStore } from "../../src/agent/contracts";
+import type {
+	AgentImageAttachment,
+	AgentMessage,
+	AgentToolExecutionStore,
+} from "../../src/agent/contracts";
 import { AgentCoreError } from "../../src/agent/contracts";
 import { AgentHooks } from "../../src/agent/hooks";
 import { abortable, AgentLoop, type AgentLoopOptions } from "../../src/agent/loop";
@@ -25,6 +29,19 @@ export interface BlackxAgentRuntimeOptions extends AgentLoopOptions {
 	snapshots?: ContextSnapshotStore;
 	traces?: RuntimeTraceStore;
 	clockMs?: () => number;
+	resolveImageAttachment?: (
+		scope: { tenantId: string; workspaceId: string },
+		attachment: AgentImageAttachment,
+	) => Promise<AgentImageAttachment>;
+}
+
+function withoutImageData(message: AgentMessage): AgentMessage {
+	const { attachments, ...rest } = message;
+	if (!attachments) return rest;
+	return {
+		...rest,
+		attachments: attachments.map(({ data: _data, ...attachment }) => attachment),
+	};
 }
 
 function classifyFailure(error: unknown, timedOut: boolean, cancelled: boolean): RuntimeFailure {
@@ -96,6 +113,9 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 		if (request.resume && !request.sessionId) {
 			throw new RuntimeFailure("invalid_output", "Runtime resume requires a Session ID", false);
 		}
+		if ((request.attachments?.length ?? 0) > 8 || request.attachments?.some((attachment) => attachment.data)) {
+			throw new RuntimeFailure("invalid_output", "Runtime accepts up to 8 image references and no inline image data", false);
+		}
 		const timeout = new AbortController();
 		let timedOut = false;
 		const timer = setTimeout(() => {
@@ -125,6 +145,36 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				throw new RuntimeFailure("context_failure", "Runtime Session does not exist for resume", false);
 			}
 			const resuming = Boolean(request.resume && session.revision > 0);
+			const hydrate = async (attachment: AgentImageAttachment): Promise<AgentImageAttachment> => {
+				if (!this.options.resolveImageAttachment) {
+					throw new RuntimeFailure("context_failure", "Runtime image resolver is not configured", false);
+				}
+				let resolved: AgentImageAttachment;
+				try {
+					resolved = await this.options.resolveImageAttachment(scope, attachment);
+				} catch (error) {
+					throw new RuntimeFailure("context_failure", "Runtime image attachment could not be resolved", false, { cause: error });
+				}
+				if (
+					!resolved.data ||
+					resolved.sourceRef !== attachment.sourceRef ||
+					resolved.sha256 !== attachment.sha256 ||
+					resolved.mediaType !== attachment.mediaType
+				) {
+					throw new RuntimeFailure("context_failure", "Runtime image attachment failed integrity validation", false);
+				}
+				return resolved;
+			};
+			const history = await Promise.all(session.messages.map(async (message) => ({
+				...message,
+				attachments: message.attachments
+					? await Promise.all(message.attachments.map(hydrate))
+					: undefined,
+			})));
+			const inputAttachments = request.attachments && !resuming
+				? await Promise.all(request.attachments.map(hydrate))
+				: undefined;
+			if (combinedSignal.aborted) throw combinedSignal.reason;
 			const skills = this.options.skills.resolve(request.skills ?? []);
 			let removedMessages = 0;
 			let finalContextSnapshotId: string | undefined;
@@ -133,6 +183,13 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				observationEvents.push(event);
 				traceEvents.push(event);
 			};
+			const resolvedAttachmentCount = history.reduce(
+				(count, message) => count + (message.attachments?.length ?? 0),
+				inputAttachments?.length ?? 0,
+			);
+			if (resolvedAttachmentCount > 0) {
+				observe({ type: "input.attachments.resolved", count: resolvedAttachmentCount });
+			}
 			const modelStarted = new Map<number, number>();
 			const hooks = new AgentHooks(this.options.hooks);
 			hooks.on("compact.after", (event) => {
@@ -151,10 +208,11 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 					snapshotId,
 					iteration: event.iteration,
 					skills: skills.map((skill) => ({ name: skill.name, version: skill.version })),
-					messages: event.messages.map((message) => ({ ...message })),
+					messages: event.messages.map(withoutImageData),
 					estimatedChars: event.messages.reduce(
 						(total, message) => total
 							+ message.content.length
+							+ JSON.stringify(message.attachments ?? []).length
 							+ JSON.stringify(message.toolCalls ?? []).length
 							+ JSON.stringify(message.providerState ?? null).length,
 						0,
@@ -203,8 +261,9 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				idempotencyKey: request.idempotencyKey,
 				instructions: request.instructions ?? [],
 				skills,
-				history: session.messages,
+				history,
 				input: resuming ? "" : request.input,
+				attachments: inputAttachments,
 				resume: resuming,
 				allowedTools: request.allowedTools ?? [],
 				policy: request.policy,
@@ -217,7 +276,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				result.messages
 					.filter((message) => !(message.role === "system" && message.pinned))
 					.map((message) => ({
-						...message,
+						...withoutImageData(message),
 						pinned: message.durable === true || (result.stopReason === "slice_limit" && message.pinned === true),
 					})),
 				this.now(),

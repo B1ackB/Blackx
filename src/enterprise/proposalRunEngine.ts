@@ -63,6 +63,7 @@ export interface CompleteProposalEvaluationCommand extends CommandEnvelope {
 	passed: boolean;
 	reportRef: string;
 	approvalId: string;
+	requestApproval?: boolean;
 }
 
 export interface ResolveApprovalCommand extends CommandEnvelope {
@@ -267,6 +268,11 @@ function reduceEvent(
 				...next,
 				approval: { ...state.approval, status: "superseded" },
 			};
+		case "stage.input_required":
+			if (state.stageStatus !== "evaluating" || !state.evaluation?.passed) {
+				illegal("Input can only be requested after a successful Evaluation");
+			}
+			return { ...next, status: "running", stageStatus: "needs_input" };
 		case "stage.revision_required":
 			if (state.currentProposal?.freshness !== "stale") {
 				illegal("A revision requires a stale current Proposal");
@@ -278,12 +284,19 @@ function reduceEvent(
 			};
 		case "stage.restarted":
 			if (
+				state.stageStatus !== "needs_input" &&
 				state.stageStatus !== "revision_required" &&
-				state.stageStatus !== "retryable_failed"
+				state.stageStatus !== "retryable_failed" &&
+				state.stageStatus !== "cancelled"
 			) {
 				illegal("Proposal stage is not restartable from its current state");
 			}
 			return { ...next, status: "running", stageStatus: "running", lastJobId: undefined };
+		case "stage.cancelled":
+			if (state.stageStatus === "passed" || state.stageStatus === "cancelled") {
+				illegal("Proposal stage cannot be cancelled from its current state");
+			}
+			return { ...next, status: "cancelled", stageStatus: "cancelled" };
 		case "stage.completed":
 			if (
 				state.stageStatus !== "waiting_approval" ||
@@ -304,10 +317,17 @@ export function replayProposalRun(
 }
 
 export class ProposalRunEngine {
-	constructor(private readonly store: EnterpriseEventStore) {}
+	constructor(
+		private readonly store: EnterpriseEventStore,
+		private readonly stageId = "proposal",
+	) {}
 
 	load(scope: AggregateScope): ProposalRunState {
 		return replayProposalRun(scope, this.store.read(scope));
+	}
+
+	readEvents(scope: AggregateScope): EnterpriseEvent[] {
+		return this.store.read(scope);
 	}
 
 	create(command: CommandEnvelope): ProposalRunState {
@@ -317,7 +337,7 @@ export class ProposalRunEngine {
 	}
 
 	startProposal(command: CommandEnvelope): ProposalRunState {
-		return this.execute(command, [{ type: "stage.started", stage: "proposal" }], (state) => {
+		return this.execute(command, [{ type: "stage.started", stage: this.stageId }], (state) => {
 			if (state.aggregateVersion === 0) illegal("Run must exist before starting a stage");
 			if (state.stageStatus !== "pending") illegal("Proposal stage cannot start from its current state");
 		});
@@ -381,12 +401,16 @@ export class ProposalRunEngine {
 			reportRef: command.reportRef,
 		}];
 		if (command.passed) {
-			events.push({
-				type: "approval.requested",
-				approvalId: command.approvalId,
-				artifactId: command.artifactId,
-				artifactVersion: command.artifactVersion,
-			});
+			if (command.requestApproval === false) {
+				events.push({ type: "stage.input_required", stage: this.stageId });
+			} else {
+				events.push({
+					type: "approval.requested",
+					approvalId: command.approvalId,
+					artifactId: command.artifactId,
+					artifactVersion: command.artifactVersion,
+				});
+			}
 		}
 		return this.execute(command, events, (state) => {
 			if (
@@ -426,7 +450,7 @@ export class ProposalRunEngine {
 	confirmProposalGate(command: CommandEnvelope): ProposalRunState {
 		return this.execute(
 			command,
-			[{ type: "stage.completed", stage: "proposal" }],
+			[{ type: "stage.completed", stage: this.stageId }],
 			(state) => {
 				if (
 					state.stageStatus !== "waiting_approval" ||
@@ -439,7 +463,10 @@ export class ProposalRunEngine {
 		);
 	}
 
-	recordFactVersion(command: RecordFactVersionCommand): ProposalRunState {
+	recordFactVersion(
+		command: RecordFactVersionCommand,
+		options: { duringExecution?: boolean } = {},
+	): ProposalRunState {
 		const state = this.load(command);
 		const current = state.currentProposal;
 		const usedVersion = current?.inputFactVersions[command.factKey];
@@ -471,12 +498,15 @@ export class ProposalRunEngine {
 					artifactVersion: state.approval.artifactVersion,
 				});
 			}
-			events.push({ type: "stage.revision_required", stage: "proposal" });
+			events.push({ type: "stage.revision_required", stage: this.stageId });
 		}
 		return this.execute(command, events, (latest) => {
+			if (latest.stageStatus === "cancelled" || latest.stageStatus === "passed") {
+				illegal("Facts cannot change after the stage is terminal");
+			}
 			if (
 				latest.stageStatus === "evaluating" ||
-				latest.stageStatus === "running" && latest.lastJobId
+				latest.stageStatus === "running" && latest.lastJobId && !options.duringExecution
 			) {
 				throw new EnterpriseKernelError(
 					"concurrency_conflict",
@@ -528,16 +558,38 @@ export class ProposalRunEngine {
 	restartProposal(command: CommandEnvelope): ProposalRunState {
 		return this.execute(
 			command,
-			[{ type: "stage.restarted", stage: "proposal" }],
+			[{ type: "stage.restarted", stage: this.stageId }],
 			(state) => {
 				if (
+					state.stageStatus !== "needs_input" &&
 					state.stageStatus !== "revision_required" &&
-					state.stageStatus !== "retryable_failed"
+					state.stageStatus !== "retryable_failed" &&
+					state.stageStatus !== "cancelled"
 				) {
 					illegal("Proposal stage is not restartable from its current state");
 				}
 			},
 		);
+	}
+
+	cancelStage(command: CommandEnvelope): ProposalRunState {
+		const state = this.load(command);
+		const events: EnterpriseEventData[] = [];
+		if (state.approval && state.approval.status !== "superseded") {
+			events.push({
+				type: "approval.superseded",
+				approvalId: state.approval.approvalId,
+				artifactId: state.approval.artifactId,
+				artifactVersion: state.approval.artifactVersion,
+			});
+		}
+		events.push({ type: "stage.cancelled", stage: this.stageId });
+		return this.execute(command, events, (latest) => {
+			if (latest.aggregateVersion === 0) illegal("Run must exist before cancellation");
+			if (latest.stageStatus === "passed" || latest.stageStatus === "cancelled") {
+				illegal("Proposal stage cannot be cancelled from its current state");
+			}
+		});
 	}
 
 	requestProposalJob(
@@ -555,10 +607,10 @@ export class ProposalRunEngine {
 		}
 		const result = this.store.append({
 			...command,
-			events: [{
-				data: {
-					type: "stage.execution_requested",
-					stage: "proposal",
+				events: [{
+					data: {
+						type: "stage.execution_requested",
+						stage: this.stageId,
 					jobId: outbox.payload.jobId,
 				},
 			}],

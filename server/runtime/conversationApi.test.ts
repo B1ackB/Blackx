@@ -8,6 +8,7 @@ import { printSkills } from "../../src/print/skills";
 import type { ConversationView } from "../../src/runtime/conversationContracts";
 import { BlackxAgentRuntime } from "./agentRuntime";
 import { ConversationApiController } from "./conversationApi";
+import { FileConversationAttachmentStore } from "./conversationAttachments";
 import { FakeAgentRuntime } from "./fakeAgentRuntime";
 import { FileAgentStateStore } from "./fileAgentStateStore";
 
@@ -195,6 +196,86 @@ describe("ConversationApiController", () => {
 			"第二轮真实回复",
 		]);
 		expect(generateCount).toBe(2);
+	});
+
+	it("sends selected images as native model input without persisting Base64", async () => {
+		const sessions = state();
+		const attachmentDirectory = mkdtempSync(join(tmpdir(), "blackx-conversation-images-"));
+		directories.push(attachmentDirectory);
+		const attachments = new FileConversationAttachmentStore(attachmentDirectory);
+		let receivedData: string | undefined;
+		const provider: AgentModelProvider = {
+			async generate(modelRequest) {
+				receivedData = modelRequest.messages
+					.flatMap((message) => message.attachments ?? [])
+					.at(-1)?.data;
+				return {
+					text: "我看到了参考图。",
+					toolCalls: [],
+					usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
+				};
+			},
+		};
+		const runtime = new BlackxAgentRuntime({
+			provider,
+			skills: new SkillRegistry(printSkills),
+			sessions,
+			snapshots: sessions,
+			traces: sessions,
+			resolveImageAttachment: async (scope, attachment) => attachments.resolveImage(scope, attachment),
+		});
+		const controller = new ConversationApiController(
+			runtime,
+			sessions,
+			undefined,
+			() => "conversation-image",
+			[],
+			attachments,
+		);
+		const conversationId = conversation(controller.create(context)).conversationId;
+		const uploaded = attachments.put({
+			tenantId: context.tenantId,
+			workspaceId: context.workspaceId,
+			conversationId,
+		}, {
+			requestId: "upload-image",
+			name: "reference.png",
+			mediaType: "image/png",
+			content: Buffer.from("image-bytes"),
+		}).attachment;
+
+		const response = await controller.send(context, conversationId, {
+			messageId: "message-image",
+			content: "",
+			attachmentIds: [uploaded.attachmentId],
+		});
+
+		expect(response.status).toBe(200);
+		expect(receivedData).toBe(Buffer.from("image-bytes").toString("base64"));
+		expect(conversation(response).messages[0]).toMatchObject({
+			role: "user",
+			content: "",
+			attachments: [{ name: "reference.png", mediaType: "image/png" }],
+		});
+		const stored = sessions.getSession({
+			...context,
+			runId: conversationId,
+			sessionId: conversationId,
+		});
+		expect(stored?.messages.flatMap((message) => message.attachments ?? []).every((attachment) => attachment.data === undefined)).toBe(true);
+		const trace = (controller.traces(context, conversationId).body as {
+			traces: Array<{ events: Array<{ type: string; count?: number; snapshotId?: string }> }>;
+		}).traces[0];
+		expect(trace.events).toContainEqual({ type: "input.attachments.resolved", count: 1 });
+		const snapshotId = trace.events.find((event) => event.type === "context.snapshot.saved")?.snapshotId;
+		expect(snapshotId).toBeDefined();
+		const snapshot = sessions.read({
+			...context,
+			runId: conversationId,
+			sessionId: conversationId,
+		}, snapshotId!);
+		expect(snapshot.messages.flatMap((message) => message.attachments ?? []).every((attachment) => attachment.data === undefined)).toBe(true);
+		expect(JSON.stringify(snapshot)).not.toContain(Buffer.from("image-bytes").toString("base64"));
 	});
 
 	it("refuses conversation turns when the server is running the Fake adapter", async () => {

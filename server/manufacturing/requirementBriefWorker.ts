@@ -1,0 +1,418 @@
+import type { ArtifactContentKey, ArtifactContentStore } from "../../src/enterprise/artifactStore";
+import { ArtifactStoreError } from "../../src/enterprise/artifactStore";
+import type { AgentImageAttachment } from "../../src/agent/contracts";
+import type {
+	AggregateScope,
+	ProposalRunState,
+} from "../../src/enterprise/contracts";
+import { EnterpriseKernelError } from "../../src/enterprise/contracts";
+import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
+import type { StageJobLease } from "../../src/enterprise/stageJobQueue";
+import {
+	evaluateRequirementBrief,
+	createRequirementBrief,
+	requirementBriefOutputSchema,
+	normalizeRequirementFactKey,
+	type ManufacturingIndustry,
+	type RequirementBriefV1,
+	type RequirementFactV1,
+} from "../../src/manufacturing/requirementBrief";
+import type {
+	AgentRuntimePort,
+	RuntimeAdapterKind,
+	RuntimeUsage,
+} from "../../src/runtime/contracts";
+import { RuntimeFailure } from "../../src/runtime/contracts";
+import { FileConversationAttachmentStore } from "../runtime/conversationAttachments";
+
+export interface RequirementBriefWorkerCommand extends AggregateScope {
+	commandId: string;
+	correlationId: string;
+	expectedVersion: number;
+}
+
+type RequirementBriefWorkerResult =
+	| { status: "completed"; state: ProposalRunState }
+	| {
+		status: "paused";
+		state: ProposalRunState;
+		sessionId: string;
+		contextSnapshotId: string;
+	};
+
+interface RequirementRuntimeCheckpoint {
+	schemaVersion: "requirement-runtime-checkpoint.v1";
+	workerCommandId: string;
+	inputAggregateVersion: number;
+	executionId: string;
+	adapter: RuntimeAdapterKind;
+	sessionId?: string;
+	contextSnapshotId: string;
+	finalResponse: string;
+	runtimeDurationMs?: number;
+	usage?: RuntimeUsage;
+	rawCandidateFactCount?: number;
+	canonicalCandidateFactCount?: number;
+	toolExecutionCount?: number;
+	toolFailureCount?: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseCandidate(value: string, industry: ManufacturingIndustry): RequirementBriefV1 | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		return undefined;
+	}
+	if (
+		!isRecord(parsed) ||
+		parsed.schemaVersion !== "requirement-brief.v1" ||
+		parsed.industry !== industry ||
+		typeof parsed.title !== "string" ||
+		typeof parsed.customerGoal !== "string" ||
+		!Array.isArray(parsed.facts) ||
+		!Array.isArray(parsed.assumptions)
+	) return undefined;
+	return parsed as unknown as RequirementBriefV1;
+}
+
+function candidateFacts(industry: ManufacturingIndustry, value: RequirementBriefV1): RequirementFactV1[] {
+	return value.facts.flatMap((fact) => {
+		if (
+			!fact ||
+			typeof fact !== "object" ||
+			typeof fact.key !== "string" ||
+			(typeof fact.value !== "string" && typeof fact.value !== "number" && typeof fact.value !== "boolean") ||
+			typeof fact.value === "string" && !fact.value.trim() ||
+			typeof fact.value === "number" && !Number.isFinite(fact.value) ||
+			fact.unit !== undefined && (typeof fact.unit !== "string" || !fact.unit.trim())
+		) return [];
+		const key = normalizeRequirementFactKey(industry, fact.key);
+		if (!key) return [];
+		return [{
+			key,
+			version: 1,
+			value: typeof fact.value === "string" ? fact.value.trim() : fact.value,
+			unit: fact.unit?.trim(),
+			status: "unverified" as const,
+			sourceType: "model_output" as const,
+			sourceRef: "runtime-output",
+		}];
+	});
+}
+
+export class RequirementBriefWorker {
+	constructor(
+		private readonly engine: ProposalRunEngine,
+		private readonly runtime: AgentRuntimePort,
+		private readonly artifacts: ArtifactContentStore,
+		private readonly attachments?: FileConversationAttachmentStore,
+	) {}
+
+	executeLease(lease: StageJobLease, signal?: AbortSignal): Promise<RequirementBriefWorkerResult> {
+		if (lease.stageId !== "requirement-brief") {
+			throw new RuntimeFailure("permission_denied", "Job is not a Requirement Brief stage", false);
+		}
+		return this.execute({
+			tenantId: lease.tenantId,
+			workspaceId: lease.workspaceId,
+			runId: lease.runId,
+			commandId: lease.commandId,
+			correlationId: lease.correlationId,
+			expectedVersion: lease.expectedVersion,
+		}, lease.sessionId, signal);
+	}
+
+	async execute(
+		command: RequirementBriefWorkerCommand,
+		sessionId?: string,
+		signal?: AbortSignal,
+	): Promise<RequirementBriefWorkerResult> {
+		let state = this.engine.load(command);
+		const runtimeCommandId = `${command.commandId}:runtime`;
+		const artifactCommandId = `${command.commandId}:artifact`;
+		const evaluationCommandId = `${command.commandId}:evaluation`;
+		const gateCommandId = `${command.commandId}:gate`;
+		if (state.status === "completed") return { status: "completed", state };
+		if (state.stageStatus === "waiting_approval") {
+			if (state.approval?.status !== "approved" || this.engine.hasCommand(command, gateCommandId)) {
+				return { status: "completed", state };
+			}
+			return {
+				status: "completed",
+				state: this.engine.confirmProposalGate({
+					...command,
+					actorId: "blackx-worker",
+					commandId: gateCommandId,
+					expectedVersion: state.aggregateVersion,
+				}),
+			};
+		}
+		if (this.engine.hasCommand(command, evaluationCommandId)) return { status: "completed", state };
+		if (state.stageStatus !== "running" && state.stageStatus !== "evaluating") {
+			throw new EnterpriseKernelError("illegal_transition", "Requirement Brief Worker requires a running stage");
+		}
+
+		const industryFact = state.facts.industry;
+		const industryValue = industryFact?.value;
+		if (
+			industryFact?.status !== "verified" ||
+			(industryValue !== "print" && industryValue !== "furniture")
+		) {
+			throw new RuntimeFailure("invalid_output", "Requirement Brief requires a verified industry", false);
+		}
+		const industry = industryValue;
+		const attachmentFact = state.facts.customer_attachments;
+		const conversationId = /^conversation:(.+):revision:\d+$/.exec(
+			state.facts.customer_brief?.sourceRef ?? "",
+		)?.[1];
+		let imageAttachments: AgentImageAttachment[] | undefined;
+		if (attachmentFact) {
+			if (!this.attachments || !conversationId) {
+				throw new RuntimeFailure("context_failure", "Requirement Brief attachment snapshot is unavailable", false);
+			}
+			const attachmentScope = {
+				tenantId: command.tenantId,
+				workspaceId: command.workspaceId,
+				conversationId,
+			};
+			if (this.attachments.digest(attachmentScope) !== attachmentFact.value) {
+				throw new RuntimeFailure("context_failure", "Requirement Brief attachment snapshot changed; start a new review", false);
+			}
+			imageAttachments = this.attachments.imageReferences(attachmentScope);
+		}
+		const artifactVersion = this.engine.hasCommand(command, artifactCommandId) && state.currentProposal
+			? state.currentProposal.version
+			: (state.proposalVersions.filter((artifact) => artifact.artifactId === "requirement-brief").at(-1)?.version ?? 0) + 1;
+		const checkpointKey = {
+			...command,
+			artifactId: "requirement-runtime-checkpoint",
+			artifactVersion,
+		};
+		let checkpoint = this.readCheckpoint(checkpointKey);
+		if (!checkpoint) {
+			const runtimeStartedAt = Date.now();
+			const result = await this.runtime.executeTurn({
+				tenantId: command.tenantId,
+				workspaceId: command.workspaceId,
+				runId: command.runId,
+				stageId: "requirement-brief",
+				actorId: "blackx-worker",
+				idempotencyKey: command.commandId,
+				sessionId,
+				resume: sessionId ? "if-present" : undefined,
+				instructions: [
+					"Call project_source_read with sourceId customer-brief before answering.",
+					"Extract candidate facts only. Never claim that a model-created fact is verified.",
+					"Return only requirement-brief.v1 JSON for the selected industry.",
+				],
+				skills: ["blackx-requirement-brief"],
+				allowedTools: ["project_source_read"],
+				input: `Create a ${industry} Requirement Brief from the current customer source.`,
+				attachments: imageAttachments,
+				outputSchema: requirementBriefOutputSchema,
+				fallbackOutput: JSON.stringify(createRequirementBrief({
+					industry,
+					title: `${industry === "print" ? "Print" : "Furniture"} Requirement Brief`,
+					customerGoal: String(state.facts.customer_brief?.value ?? "Clarify customer requirements"),
+					facts: [],
+				})),
+				policy: {
+					sandboxMode: "read-only",
+					approvalPolicy: "never",
+					timeoutMs: 120_000,
+				},
+			}, signal);
+			if (!result.contextSnapshotId) {
+				throw new ArtifactStoreError("artifact_store_unavailable", "Runtime returned no Context Snapshot");
+			}
+			if (result.status === "paused") {
+				if (!result.sessionId) {
+					throw new ArtifactStoreError("artifact_store_unavailable", "Runtime paused without a Session ID");
+				}
+				return {
+					status: "paused",
+					state,
+					sessionId: result.sessionId,
+					contextSnapshotId: result.contextSnapshotId,
+				};
+			}
+			const completedCandidate = parseCandidate(result.finalResponse, industry);
+			checkpoint = {
+				schemaVersion: "requirement-runtime-checkpoint.v1",
+				workerCommandId: command.commandId,
+				inputAggregateVersion: command.expectedVersion,
+				executionId: result.executionId,
+				adapter: result.adapter,
+				sessionId: result.sessionId,
+				contextSnapshotId: result.contextSnapshotId,
+				finalResponse: result.finalResponse,
+				runtimeDurationMs: Math.max(0, Date.now() - runtimeStartedAt),
+				usage: result.usage,
+				rawCandidateFactCount: completedCandidate?.facts.length ?? 0,
+				canonicalCandidateFactCount: completedCandidate
+					? candidateFacts(industry, completedCandidate).length
+					: 0,
+				toolExecutionCount: result.events.filter((event) => event.type === "tool.completed").length,
+				toolFailureCount: result.events.filter((event) =>
+					event.type === "tool.completed" && event.status !== "succeeded",
+				).length,
+			};
+			this.artifacts.putJson(checkpointKey, checkpoint);
+		}
+		if (
+			checkpoint.workerCommandId !== command.commandId ||
+			checkpoint.inputAggregateVersion !== command.expectedVersion
+		) {
+			throw new EnterpriseKernelError("concurrency_conflict", "Requirement Runtime Checkpoint is stale");
+		}
+
+		const candidate = parseCandidate(checkpoint.finalResponse, industry);
+		if (candidate && !this.engine.hasCommand(command, runtimeCommandId)) {
+			for (const fact of candidateFacts(industry, candidate)) {
+				state = this.engine.load(command);
+				const current = state.facts[fact.key];
+				const factCommandId = `${command.commandId}:fact:${fact.key}`;
+				if (this.engine.hasCommand(command, factCommandId) || current?.status === "verified") continue;
+				if (current && Object.is(current.value, fact.value) && current.unit === fact.unit) continue;
+				state = this.engine.recordFactVersion({
+					...command,
+					actorId: "blackx-worker",
+					commandId: factCommandId,
+					expectedVersion: state.aggregateVersion,
+					factKey: fact.key,
+					factVersion: (state.factVersions[fact.key] ?? 0) + 1,
+					value: fact.value,
+					unit: fact.unit,
+					status: "unverified",
+					sourceType: "model_output",
+					sourceRef: `runtime:${checkpoint.executionId}`,
+				}, { duringExecution: true });
+			}
+		}
+
+		state = this.engine.load(command);
+		if (!this.engine.hasCommand(command, runtimeCommandId)) {
+			state = this.engine.linkProposalRuntime({
+				...command,
+				actorId: "blackx-worker",
+				commandId: runtimeCommandId,
+				expectedVersion: state.aggregateVersion,
+				executionId: checkpoint.executionId,
+				adapterId: checkpoint.adapter,
+				resumeHandle: checkpoint.sessionId,
+				contextSnapshotId: checkpoint.contextSnapshotId,
+			});
+		}
+
+		let content: unknown = {
+			schemaVersion: "invalid-runtime-output.v1",
+			rawOutput: checkpoint.finalResponse,
+		};
+		if (candidate) {
+			state = this.engine.load(command);
+			content = createRequirementBrief({
+				industry,
+				title: candidate.title,
+				customerGoal: candidate.customerGoal,
+				facts: Object.values(state.facts).flatMap((fact): RequirementFactV1[] =>
+					fact.key === "industry" ||
+					fact.key === "customer_brief" ||
+					fact.key === "customer_attachments" ||
+					fact.status === "rejected"
+						? []
+						: [{
+							key: fact.key,
+							version: fact.version,
+							value: fact.value,
+							unit: fact.unit,
+							status: fact.status,
+							sourceType: fact.sourceType,
+							sourceRef: fact.sourceRef,
+						}],
+				),
+				assumptions: candidate.assumptions,
+			});
+		}
+
+		if (!this.engine.hasCommand(command, artifactCommandId)) {
+			state = this.engine.load(command);
+			const contentRef = this.artifacts.putJson({
+				...command,
+				artifactId: "requirement-brief",
+				artifactVersion,
+			}, content);
+			state = this.engine.createProposalArtifact({
+				...command,
+				actorId: "blackx-worker",
+				commandId: artifactCommandId,
+				expectedVersion: state.aggregateVersion,
+				artifactId: "requirement-brief",
+				schemaVersion: candidate ? "requirement-brief.v1" : "invalid-runtime-output.v1",
+				contentRef,
+				inputFactVersions: { ...state.factVersions },
+				runtimeExecutionId: checkpoint.executionId,
+				contextSnapshotId: checkpoint.contextSnapshotId,
+			});
+		}
+
+		if (!this.engine.hasCommand(command, evaluationCommandId)) {
+			const evaluation = evaluateRequirementBrief(content);
+			const reportRef = this.artifacts.putJson({
+				...command,
+				artifactId: "requirement-brief-evaluation",
+				artifactVersion,
+			}, evaluation);
+			state = this.engine.completeProposalEvaluation({
+				...command,
+				actorId: "blackx-worker",
+				commandId: evaluationCommandId,
+				expectedVersion: state.aggregateVersion,
+				artifactId: "requirement-brief",
+				artifactVersion,
+				passed: evaluation.passed,
+				reportRef,
+				approvalId: `approval-${command.runId}-requirement-v${artifactVersion}`,
+				requestApproval: evaluation.approvalEligible,
+			});
+		}
+		return { status: "completed", state };
+	}
+
+	private readCheckpoint(key: ArtifactContentKey): RequirementRuntimeCheckpoint | undefined {
+		let value: unknown;
+		try {
+			value = this.artifacts.readJson(key);
+		} catch (error) {
+			if (error instanceof ArtifactStoreError && error.code === "artifact_not_found") return undefined;
+			throw error;
+		}
+		if (
+			!isRecord(value) ||
+			value.schemaVersion !== "requirement-runtime-checkpoint.v1" ||
+			typeof value.workerCommandId !== "string" ||
+			!Number.isInteger(value.inputAggregateVersion) ||
+			typeof value.executionId !== "string" ||
+			(value.adapter !== "fake" && value.adapter !== "blackx-agent" && value.adapter !== "client-fallback") ||
+			(value.sessionId !== undefined && typeof value.sessionId !== "string") ||
+			typeof value.contextSnapshotId !== "string" ||
+			typeof value.finalResponse !== "string" ||
+			(value.runtimeDurationMs !== undefined && (
+				typeof value.runtimeDurationMs !== "number" ||
+				!Number.isFinite(value.runtimeDurationMs) ||
+				value.runtimeDurationMs < 0
+			)) ||
+			(value.rawCandidateFactCount !== undefined && !Number.isInteger(value.rawCandidateFactCount)) ||
+			(value.canonicalCandidateFactCount !== undefined && !Number.isInteger(value.canonicalCandidateFactCount)) ||
+			(value.toolExecutionCount !== undefined && !Number.isInteger(value.toolExecutionCount)) ||
+			(value.toolFailureCount !== undefined && !Number.isInteger(value.toolFailureCount))
+		) {
+			throw new ArtifactStoreError("artifact_store_unavailable", "Requirement Runtime Checkpoint is invalid");
+		}
+		return value as unknown as RequirementRuntimeCheckpoint;
+	}
+}

@@ -2,10 +2,13 @@ import type { RuntimeHealth } from "./contracts";
 import type { RuntimeTraceRecord } from "./contracts";
 import type {
 	BackgroundTaskView,
+	ConversationAttachment,
 	ConversationSummary,
 	ConversationView,
 	CronScheduleView,
 	ProposalWorkspaceView,
+	RequirementBriefMetricsSeriesView,
+	RequirementBriefWorkspaceView,
 } from "./conversationContracts";
 
 interface ErrorPayload {
@@ -33,7 +36,7 @@ async function request<Value>(path: string, init?: RequestInit): Promise<Value> 
 			...init,
 			headers: {
 				...identityHeaders,
-				...(init?.body ? { "content-type": "application/json" } : {}),
+				...(typeof init?.body === "string" ? { "content-type": "application/json" } : {}),
 				...init?.headers,
 			},
 		});
@@ -48,6 +51,26 @@ async function request<Value>(path: string, init?: RequestInit): Promise<Value> 
 		);
 	}
 	return response.json() as Promise<Value>;
+}
+
+async function attachmentRequest(path: string, init?: RequestInit): Promise<Response> {
+	let response: Response;
+	try {
+		response = await fetch(path, {
+			...init,
+			headers: { ...identityHeaders, ...init?.headers },
+		});
+	} catch {
+		throw new ConversationClientError("runtime_unavailable", "无法连接 Blackx 服务端");
+	}
+	if (!response.ok) {
+		const payload = await response.json().catch(() => ({})) as ErrorPayload;
+		throw new ConversationClientError(
+			payload.code ?? "attachment_failed",
+			payload.message ?? `附件请求失败（HTTP ${response.status}）`,
+		);
+	}
+	return response;
 }
 
 export class ConversationClient {
@@ -71,6 +94,36 @@ export class ConversationClient {
 		)).conversation;
 	}
 
+	async listAttachments(conversationId: string): Promise<ConversationAttachment[]> {
+		return (await request<{ attachments: ConversationAttachment[] }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/attachments`,
+		)).attachments;
+	}
+
+	async uploadAttachment(
+		conversationId: string,
+		requestId: string,
+		file: File,
+	): Promise<ConversationAttachment> {
+		const query = new URLSearchParams({ requestId, name: file.name });
+		const response = await attachmentRequest(
+			`/api/conversations/${encodeURIComponent(conversationId)}/attachments?${query}`,
+			{
+				method: "POST",
+				body: file,
+				headers: { "content-type": file.type || "application/octet-stream" },
+			},
+		);
+		return ((await response.json()) as { attachment: ConversationAttachment }).attachment;
+	}
+
+	async readAttachment(conversationId: string, attachmentId: string): Promise<Blob> {
+		const response = await attachmentRequest(
+			`/api/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+		);
+		return response.blob();
+	}
+
 	async listTraces(conversationId: string): Promise<RuntimeTraceRecord[]> {
 		return (await request<{ traces: RuntimeTraceRecord[] }>(
 			`/api/conversations/${encodeURIComponent(conversationId)}/traces`,
@@ -79,7 +132,7 @@ export class ConversationClient {
 
 	async send(
 		conversationId: string,
-		message: { messageId: string; content: string },
+		message: { messageId: string; content: string; attachmentIds?: string[] },
 	): Promise<ConversationView> {
 		return (await request<{ conversation: ConversationView }>(
 			`/api/conversations/${encodeURIComponent(conversationId)}/messages`,
@@ -160,5 +213,72 @@ export class ConversationClient {
 			`/api/conversations/${encodeURIComponent(conversationId)}/proposal/approval`,
 			{ method: "POST", body: JSON.stringify({ requestId, decision }) },
 		)).proposal;
+	}
+
+	async getRequirementBrief(conversationId: string): Promise<RequirementBriefWorkspaceView | null> {
+		return (await request<{ requirementBrief: RequirementBriefWorkspaceView | null }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief`,
+		)).requirementBrief;
+	}
+
+	async getRequirementBriefMetrics(): Promise<RequirementBriefMetricsSeriesView> {
+		return (await request<{ requirementBriefMetrics: RequirementBriefMetricsSeriesView }>(
+			"/api/requirement-brief/metrics",
+		)).requirementBriefMetrics;
+	}
+
+	async startRequirementBrief(
+		conversationId: string,
+		requestId: string,
+		industry: "print" | "furniture",
+	): Promise<RequirementBriefWorkspaceView> {
+		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief`,
+			{ method: "POST", body: JSON.stringify({ requestId, industry }) },
+		)).requirementBrief;
+	}
+
+	async recordRequirementFact(
+		conversationId: string,
+		requestId: string,
+		fact: { key: string; value: string | number | boolean; unit?: string },
+	): Promise<RequirementBriefWorkspaceView> {
+		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/facts`,
+			{ method: "POST", body: JSON.stringify({ requestId, ...fact }) },
+		)).requirementBrief;
+	}
+
+	async resolveRequirementFact(
+		conversationId: string,
+		factKey: string,
+		requestId: string,
+		decision: "verified" | "rejected",
+	): Promise<RequirementBriefWorkspaceView> {
+		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/facts/${encodeURIComponent(factKey)}/decision`,
+			{ method: "POST", body: JSON.stringify({ requestId, decision }) },
+		)).requirementBrief;
+	}
+
+	async resolveRequirementApproval(
+		conversationId: string,
+		requestId: string,
+		decision: "approved" | "rejected",
+	): Promise<RequirementBriefWorkspaceView> {
+		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/approval`,
+			{ method: "POST", body: JSON.stringify({ requestId, decision }) },
+		)).requirementBrief;
+	}
+
+	async cancelRequirementBrief(
+		conversationId: string,
+		requestId: string,
+	): Promise<RequirementBriefWorkspaceView> {
+		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/cancel`,
+			{ method: "POST", body: JSON.stringify({ requestId }) },
+		)).requirementBrief;
 	}
 }

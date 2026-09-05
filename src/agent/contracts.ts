@@ -4,9 +4,19 @@ export interface AgentToolCall {
 	input: unknown;
 }
 
+export interface AgentImageAttachment {
+	type: "image";
+	name: string;
+	mediaType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+	sourceRef: string;
+	sha256: string;
+	data?: string;
+}
+
 export interface AgentMessage {
 	role: "system" | "user" | "assistant" | "tool";
 	content: string;
+	attachments?: AgentImageAttachment[];
 	messageId?: string;
 	createdAt?: string;
 	toolCalls?: AgentToolCall[];
@@ -218,6 +228,7 @@ export interface AgentRunInput {
 	skills: readonly AgentSkill[];
 	history: readonly AgentMessage[];
 	input: string;
+	attachments?: readonly AgentImageAttachment[];
 	resume?: boolean;
 	allowedTools: readonly string[];
 	policy: {
