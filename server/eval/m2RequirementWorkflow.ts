@@ -38,11 +38,11 @@ export interface M2RequirementWorkflowResult {
 }
 
 export interface M2RequirementWorkflowReport {
-	contract: "blackx-m2-requirement-workflow-baseline-v2";
+	contract: "blackx-m2-packaging-workflow-baseline-v3";
 	passed: boolean;
 	fixtures: number;
 	approvalEligible: number;
-	industries: { print: number; furniture: number };
+	industries: { print: number };
 	results: M2RequirementWorkflowResult[];
 }
 
@@ -153,7 +153,7 @@ async function runFixture(
 	const outbox = new StageJobOutbox(engine, store, queue);
 	const scheduler = new StageJobScheduler(queue, {
 		workerId: `m2-worker-${fixture.fixtureId}`,
-		handlers: { "requirement-brief": (lease, signal) => worker.executeLease(lease, signal) },
+		handlers: { "requirement-brief": (lease, signal, guard) => worker.executeLease(lease, signal, guard) },
 		dispatchOutbox: () => outbox.dispatchOne(),
 	});
 	const request = {
@@ -261,13 +261,12 @@ export async function runM2RequirementWorkflow(directory: string): Promise<M2Req
 			: result.events.includes("stage.input_required")),
 	);
 	return {
-		contract: "blackx-m2-requirement-workflow-baseline-v2",
+		contract: "blackx-m2-packaging-workflow-baseline-v3",
 		passed,
 		fixtures: results.length,
 		approvalEligible: results.filter((result) => result.approvalEligible).length,
 		industries: {
 			print: results.filter((result) => result.industry === "print").length,
-			furniture: results.filter((result) => result.industry === "furniture").length,
 		},
 		results,
 	};

@@ -70,7 +70,7 @@ interface AgentToolBase extends AgentToolDefinition {
 	timeoutMs: number;
 	maxResultChars: number;
 	validate(input: unknown): boolean;
-	createIdempotencyKey?(input: unknown, turnIdempotencyKey: string): string;
+	createIdempotencyKey?(input: unknown, turnIdempotencyKey: string, scope?: Pick<AgentRunInput, "tenantId" | "workspaceId" | "runId">): string;
 }
 
 export interface AgentHostTool extends AgentToolBase {
@@ -185,7 +185,7 @@ export interface AgentToolApprovalPort {
 		risk: "write" | "publish";
 		input: unknown;
 		idempotencyKey: string;
-	}): Promise<{ approved: boolean; approvalId?: string }>;
+	}, signal?: AbortSignal): Promise<{ approved: boolean; approvalId?: string }>;
 }
 
 export interface AgentToolAuditEvent {

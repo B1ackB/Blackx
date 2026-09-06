@@ -78,7 +78,7 @@ function harness() {
 	const worker = new RequirementBriefWorker(engine, runtime, artifacts, attachments);
 	const scheduler = new StageJobScheduler(queue, {
 		workerId: "requirement-workspace-test",
-		handlers: { "requirement-brief": (lease) => worker.executeLease(lease) },
+		handlers: { "requirement-brief": (lease, signal, guard) => worker.executeLease(lease, signal, guard) },
 	});
 	return {
 		conversationId: created.conversationId,
@@ -103,6 +103,35 @@ afterEach(() => {
 });
 
 describe("RequirementBriefWorkspaceApiController", () => {
+	it("rejects new furniture requests and fields before creating any workflow", () => {
+		const { controller, conversationId } = harness();
+		expect(controller.start(context, conversationId, { requestId: "retired", industry: "furniture" })).toMatchObject({ status: 400 });
+		expect(requirement(controller.get(context, conversationId))).toBeNull();
+		controller.start(context, conversationId, { requestId: "packaging", industry: "print" });
+		const before = requirement(controller.get(context, conversationId)).state.aggregateVersion;
+		expect(controller.recordFact(context, conversationId, { requestId: "retired-field", key: "installation_required", value: true })).toMatchObject({ status: 400 });
+		expect(requirement(controller.get(context, conversationId)).state.aggregateVersion).toBe(before);
+	});
+
+	it("keeps a legacy industry read-only and refuses queued execution without rewriting its facts", async () => {
+		const { controller, conversationId, eventPath, scheduler } = harness();
+		const started = requirement(controller.start(context, conversationId, { requestId: "legacy-seed", industry: "print" }));
+		const engine = new ProposalRunEngine(new FileEnterpriseEventStore(eventPath), "requirement-brief");
+		engine.recordFactVersion({ ...context, runId: started.runId, commandId: "legacy-industry", correlationId: "legacy-import", expectedVersion: started.state.aggregateVersion,
+			factKey: "industry", factVersion: 2, value: "furniture", status: "verified", sourceType: "human_confirmation", sourceRef: "legacy:confirmed" }, { duringExecution: true });
+		const before = engine.load(started.state).aggregateVersion;
+		expect(requirement(controller.get(context, conversationId)).readOnlyReason).toContain("包装");
+		expect(controller.start(context, conversationId, { requestId: "convert", industry: "print" }).status).toBe(400);
+		expect(controller.recordFact(context, conversationId, { requestId: "edit", key: "quantity", value: 100 }).status).toBe(400);
+		expect(controller.resolveFact(context, conversationId, "quantity", { requestId: "confirm", decision: "verified" }).status).toBe(400);
+		expect(controller.resolveApproval(context, conversationId, { requestId: "approve", decision: "approved" }).status).toBe(400);
+		expect(controller.delivery(context, conversationId, 1).status).toBe(410);
+		expect(await scheduler.runNext()).toMatchObject({ status: "dead_letter" });
+		expect(engine.load(started.state).aggregateVersion).toBe(before);
+		expect(engine.load(started.state).facts.industry.value).toBe("furniture");
+		expect((controller.metricsSeries(context).body as { requirementBriefMetrics: RequirementBriefMetricsSeriesView }).requirementBriefMetrics.totals.runs).toBe(0);
+		expect(controller.cancel(context, conversationId, { requestId: "cancel-legacy" }).status).toBe(200);
+	});
 	it("persists needs-input state, confirmed Facts, Artifact versions, Evaluation, and Approval", async () => {
 		const { controller, conversationId, eventPath, scheduler } = harness();
 
@@ -117,7 +146,8 @@ describe("RequirementBriefWorkspaceApiController", () => {
 		expect(requirement(started).state.facts.industry).toMatchObject({
 			value: "print",
 			status: "verified",
-			sourceType: "human_confirmation",
+			sourceType: "enterprise_source",
+			sourceRef: "domain:print:packaging",
 		});
 		const firstRun = await scheduler.runNext();
 		expect(firstRun).toMatchObject({ status: "completed" });
@@ -224,6 +254,10 @@ describe("RequirementBriefWorkspaceApiController", () => {
 				queue: { deliveryCount: 3, sliceCount: 3, totalFailureCount: 0 },
 			},
 		});
+		expect(controller.delivery(context, conversationId, 1)).toMatchObject({ status: 200, body: { delivery: { version: 1, status: "stale" } } });
+		expect(controller.delivery(context, conversationId, 2)).toMatchObject({ status: 200, body: { delivery: { version: 2, status: "approved", approval: { artifactVersion: 2 } } } });
+		expect(controller.delivery(context, conversationId, 999).status).toBe(404);
+		expect(controller.delivery({ ...context, tenantId: "other" }, conversationId, 2).status).toBe(404);
 		const series = (controller.metricsSeries(context).body as {
 			requirementBriefMetrics: RequirementBriefMetricsSeriesView;
 		}).requirementBriefMetrics;
@@ -279,14 +313,14 @@ describe("RequirementBriefWorkspaceApiController", () => {
 			stored.revision,
 			[{
 				role: "user",
-				content: "需要一套定制接待台，交货地点待确认。",
+				content: "需要一批瓦楞包装纸箱，交货地点待确认。",
 				messageId: "series-message-2",
 				createdAt: "2026-09-04T00:02:00.000Z",
 				pinned: true,
 			}],
 			"2026-09-04T00:02:00.000Z",
 		);
-		controller.start(context, second.conversationId, { requestId: "series-run-2", industry: "furniture" });
+		controller.start(context, second.conversationId, { requestId: "series-run-2", industry: "print" });
 		expect(await scheduler.runNext()).toMatchObject({ status: "completed" });
 
 		const series = (controller.metricsSeries(context).body as {
@@ -314,7 +348,7 @@ describe("RequirementBriefWorkspaceApiController", () => {
 		})).toMatchObject({ status: 400 });
 		controller.start(context, conversationId, {
 			requestId: "valid-industry",
-			industry: "furniture",
+			industry: "print",
 		});
 		expect(controller.get({ ...context, tenantId: "other-tenant" }, conversationId)).toEqual({
 			status: 404,
@@ -326,7 +360,7 @@ describe("RequirementBriefWorkspaceApiController", () => {
 		const { controller, conversationId, eventPath, scheduler } = harness();
 		controller.start(context, conversationId, {
 			requestId: "cancel-start",
-			industry: "furniture",
+			industry: "print",
 		});
 		const cancelled = controller.cancel(context, conversationId, { requestId: "cancel-request" });
 		expect(requirement(cancelled)).toMatchObject({
@@ -354,7 +388,7 @@ describe("RequirementBriefWorkspaceApiController", () => {
 
 		const reopened = controller.start(context, conversationId, {
 			requestId: "reopen-request",
-			industry: "furniture",
+			industry: "print",
 		});
 		expect(requirement(reopened)).toMatchObject({
 			state: { status: "running", stageStatus: "running" },

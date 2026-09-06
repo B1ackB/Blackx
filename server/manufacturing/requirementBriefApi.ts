@@ -1,3 +1,6 @@
+import type { RequirementDelivery } from "../../src/manufacturing/requirementDelivery";
+import { evaluateRequirementBrief, type RequirementBriefV1 } from "../../src/manufacturing/requirementBrief";
+import type { AssetInspectionRecord } from "../../src/runtime/assetInspection";
 import type { ArtifactContentStore } from "../../src/enterprise/artifactStore";
 import { ArtifactStoreError } from "../../src/enterprise/artifactStore";
 import type { ProposalRunState } from "../../src/enterprise/contracts";
@@ -27,16 +30,16 @@ function industryFact(payload: unknown, _conversation: ConversationView) {
 		typeof payload !== "object" ||
 		Array.isArray(payload) ||
 		!("industry" in payload) ||
-		(payload.industry !== "print" && payload.industry !== "furniture")
+		payload.industry !== "print"
 	) {
-		throw new ProposalWorkspaceValidationError("industry must be print or furniture");
+		throw new ProposalWorkspaceValidationError("当前仅支持包装需求（industry=print）。");
 	}
 	return [{
 		key: "industry",
 		value: payload.industry,
 		status: "verified" as const,
-		sourceType: "human_confirmation" as const,
-		sourceRef: `ui:industry:${payload.industry}`,
+		sourceType: "enterprise_source" as const,
+		sourceRef: "domain:print:packaging",
 	}];
 }
 
@@ -59,6 +62,9 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 			jobPrefix: "requirement",
 			evaluationArtifactId: "requirement-brief-evaluation",
 			protectedFactKeys: ["industry", "customer_brief", "customer_attachments"],
+			assertWritable: (state) => {
+				if (state.aggregateVersion > 0 && state.facts.industry?.value !== "print") throw new ProposalWorkspaceValidationError("历史非包装需求已停用，请新建包装会话；原始资料与交付版本保留。");
+			},
 			startFacts: (payload, conversation, scope) => {
 				const facts = industryFact(payload, conversation);
 				const attachmentScope = {
@@ -79,6 +85,43 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 		});
 	}
 
+	override recordFact(context: Parameters<ConversationApiController["get"]>[0], conversationId: unknown, payload: unknown) {
+		if (payload && typeof payload === "object" && "key" in payload &&
+			!requiredRequirementFacts.print.includes(String(payload.key))) {
+			return { status: 400, body: { code: "invalid_requirement_brief_request", message: "只能补充当前包装需求的标准字段。" } };
+		}
+		return super.recordFact(context, conversationId, payload);
+	}
+
+	delivery(context: Parameters<ConversationApiController["get"]>[0], conversationId: unknown, version: number) {
+		return this.respond(() => {
+			const { scope } = this.target(context, conversationId);
+			const state = this.requirementEngine.load(scope);
+			if (state.aggregateVersion > 0 && state.facts.industry?.value !== "print") return { status: 410, body: { code: "industry_retired", message: "历史非包装交付保留在本地，不再通过当前包装需求单导出。" } };
+			const artifact = state.proposalVersions.find((item) => item.artifactId === "requirement-brief" && item.version === version);
+			if (!Number.isSafeInteger(version) || !artifact) return { status: 404, body: { code: "artifact_not_found" } };
+			const content = this.requirementArtifacts.readJson({ ...scope, artifactId: artifact.artifactId, artifactVersion: version });
+			if (!evaluateRequirementBrief(content).passed) return { status: 409, body: { code: "invalid_artifact", message: "该版本未通过结构校验，不能导出为需求单。" } };
+			const events = this.requirementEngine.readEvents(scope);
+			const created = events.find((event) => event.data.type === "artifact.version_created" && event.data.artifactId === artifact.artifactId && event.data.artifactVersion === version);
+			const checkpoint = this.readCheckpointMetrics(state, version);
+			const brief = content as RequirementBriefV1;
+			const citations: Record<string, string> = {};
+			for (const fact of brief.facts) {
+				const original = events.findLast((event) => event.data.type === "fact.version_recorded" && event.data.factKey === fact.key && event.data.factVersion <= fact.version && event.data.value === fact.value && event.data.unit === fact.unit && event.data.sourceType === "model_output");
+				if (original?.data.type === "fact.version_recorded") citations[fact.key] = original.data.sourceRef;
+			}
+			const approved = artifact.freshness !== "stale" && state.currentProposal?.version === version && state.approval?.status === "approved" && state.approval.artifactVersion === version;
+			const delivery: RequirementDelivery = {
+				schemaVersion: "requirement-delivery.v1", runId: scope.runId, version,
+				status: artifact.freshness === "stale" || state.currentProposal?.version !== version ? "stale" : approved ? "approved" : "draft",
+				createdAt: created?.occurredAt ?? "", content: brief, sources: checkpoint?.inspections ?? [], citations,
+				...(approved ? { approval: { approvalId: state.approval!.approvalId, artifactVersion: version } } : {}),
+			};
+			return { status: 200, body: { delivery } };
+		});
+	}
+
 	metricsSeries(context: Parameters<ConversationApiController["list"]>[0]) {
 		return this.respond(() => {
 			const response = this.conversations.list(context);
@@ -87,7 +130,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 			const points = conversations.flatMap((conversation): RequirementBriefRunMetricsPoint[] => {
 				const { scope } = this.target(context, conversation.conversationId);
 				const state = this.requirementEngine.load(scope);
-				if (state.aggregateVersion === 0) return [];
+				if (state.aggregateVersion === 0 || state.facts.industry?.value !== "print") return [];
 				const events = this.requirementEngine.readEvents(state);
 				const first = events[0];
 				const last = events.at(-1);
@@ -99,7 +142,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 				return [{
 					runId: state.runId,
 					conversationId: conversation.conversationId,
-					...(industry === "print" || industry === "furniture" ? { industry } : {}),
+					...(industry === "print" ? { industry } : {}),
 					stageStatus: state.stageStatus,
 					evaluationPassed: state.evaluation?.passed ?? null,
 					approvalEligible: Boolean(state.approval),
@@ -119,13 +162,14 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 	protected override view(state: ProposalRunState): RequirementBriefWorkspaceView {
 		return {
 			...super.view(state),
+			...(state.facts.industry?.value !== "print" ? { readOnlyReason: "此历史需求不在当前包装业务范围内，已停止生成、修改和审批。原始会话与交付记录保留，请新建会话处理包装需求。" } : {}),
 			metrics: this.metrics(state),
 		};
 	}
 
 	private metrics(state: ProposalRunState): RequirementBriefMetricsView {
 		const industry = state.facts.industry?.value;
-		const required = industry === "print" || industry === "furniture"
+		const required = industry === "print"
 			? requiredRequirementFacts[industry]
 			: [];
 		const confirmedRequiredFacts = required.filter((key) => state.facts[key]?.status === "verified").length;
@@ -237,6 +281,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 		state: ProposalRunState,
 		artifactVersion: number,
 	): {
+		inspections?: AssetInspectionRecord[];
 		runtimeDurationMs?: number;
 		usage?: RuntimeUsage;
 		rawCandidateFactCount?: number;
@@ -257,6 +302,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 		}
 		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 		return value as {
+			inspections?: AssetInspectionRecord[];
 			runtimeDurationMs?: number;
 			usage?: RuntimeUsage;
 			rawCandidateFactCount?: number;

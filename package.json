@@ -1,35 +1,42 @@
 {
-  "name": "blackx",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx server/index.ts",
-    "dev:web": "vite",
-    "build": "tsc -b && vite build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "eval:offline": "node --import tsx eval/run.ts",
-    "eval:online": "node --import tsx eval/run.ts --online",
-    "eval:m1": "node --import tsx eval/m1Research.ts",
-    "eval:m1-online": "node --import tsx eval/m1Research.ts --online",
-	"eval:m2": "node --import tsx eval/m2RequirementBrief.ts",
-    "eval:anthropic-contract": "node --import tsx eval/anthropicContract.ts",
-    "check": "npm run test && npm run build"
-  },
-  "dependencies": {
-    "@vitejs/plugin-react": "^5.0.0",
-    "croner": "10.0.1",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "vite": "^7.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^26.3.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "tsx": "4.23.12",
-    "typescript": "^5.8.0",
-    "vitest": "^4.0.0"
-  }
+	"name": "blackx",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"dev": "tsx server/index.ts",
+		"dev:web": "vite",
+		"build": "tsc -b && vite build",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"eval:offline": "node --import tsx eval/run.ts",
+		"eval:online": "node --import tsx eval/run.ts --online",
+		"eval:m1": "node --import tsx eval/m1Research.ts",
+		"eval:m1-online": "node --import tsx eval/m1Research.ts --online",
+		"eval:m2": "node --import tsx eval/m2RequirementBrief.ts",
+		"eval:anthropic-contract": "node --import tsx eval/anthropicContract.ts",
+		"check": "npm run test && npm run build",
+		"build:native": "node scripts/build-native.mjs",
+		"predev": "npm run build:native",
+		"test:native": "BLACKX_RUN_SEATBELT_TESTS=1 vitest run server/runtime/macOsSeatbeltSandboxedToolExecutor.test.ts server/runtime/assetInspection.test.ts",
+		"eval:product": "node --import tsx eval/productSmoke.ts",
+		"dev:fixture": "npm run build:native && node --import tsx eval/productSmoke.ts --serve",
+		"check:local": "npm run check && npm run eval:offline && npm run eval:m1 && npm run eval:m2 && npm run build:native && npm run test:native && npm run eval:product"
+	},
+	"dependencies": {
+		"@vitejs/plugin-react": "^5.0.0",
+		"croner": "10.0.1",
+		"marked": "18.0.11",
+		"react": "^19.0.0",
+		"react-dom": "^19.0.0",
+		"vite": "^7.0.0"
+	},
+	"devDependencies": {
+		"@types/node": "^26.3.0",
+		"@types/react": "^19.0.0",
+		"@types/react-dom": "^19.0.0",
+		"tsx": "4.23.12",
+		"typescript": "^5.8.0",
+		"vitest": "^4.0.0"
+	}
 }

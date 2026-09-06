@@ -101,7 +101,7 @@ export class ProposalWorker {
 		return result.state;
 	}
 
-	executeLease(lease: StageJobLease, signal?: AbortSignal): Promise<ProposalWorkerSliceResult> {
+	executeLease(lease: StageJobLease, signal?: AbortSignal, assertActive: () => void = () => signal?.throwIfAborted()): Promise<ProposalWorkerSliceResult> {
 		return this.executeSlice(
 			{
 				tenantId: lease.tenantId,
@@ -113,6 +113,7 @@ export class ProposalWorker {
 			},
 			{ sessionId: lease.sessionId, resume: "if-present" },
 			signal,
+			assertActive,
 		);
 	}
 
@@ -120,7 +121,9 @@ export class ProposalWorker {
 		command: ProposalWorkerCommand,
 		continuation?: ProposalWorkerContinuation,
 		signal?: AbortSignal,
+		assertActive: () => void = () => signal?.throwIfAborted(),
 	): Promise<ProposalWorkerSliceResult> {
+		assertActive();
 		let state = this.engine.load(command);
 		const runtimeCommandId = `${command.commandId}:runtime`;
 		const artifactCommandId = `${command.commandId}:artifact`;
@@ -213,6 +216,7 @@ export class ProposalWorker {
 					timeoutMs: 120_000,
 				},
 			}, signal);
+			assertActive();
 			if (!result.contextSnapshotId) {
 				throw new ArtifactStoreError(
 					"artifact_store_unavailable",
@@ -246,6 +250,7 @@ export class ProposalWorker {
 			};
 			// ponytail: local checkpoint cannot close the provider-return/write gap;
 			// require provider idempotency or a transactional worker before production.
+			assertActive();
 			this.artifacts.putJson(checkpointKey, checkpoint);
 			this.injectCrash("after_runtime_completed");
 		}
@@ -258,6 +263,7 @@ export class ProposalWorker {
 		}
 
 		if (!runtimeLinked) {
+			assertActive();
 			state = this.engine.linkProposalRuntime({
 				...command,
 				actorId: "blackx-worker",
@@ -278,6 +284,7 @@ export class ProposalWorker {
 				schemaVersion: "invalid-runtime-output.v1",
 				rawOutput: checkpoint.finalResponse,
 			};
+			assertActive();
 			const contentRef = this.artifacts.putJson(
 				{
 					...command,
@@ -286,6 +293,7 @@ export class ProposalWorker {
 				},
 				proposalContent,
 			);
+			assertActive();
 			state = this.engine.createProposalArtifact({
 				...command,
 				actorId: "blackx-worker",
@@ -304,6 +312,7 @@ export class ProposalWorker {
 		}
 
 		if (!evaluationCompleted) {
+			assertActive();
 			const reportRef = this.artifacts.putJson(
 				{
 					...command,
@@ -312,6 +321,7 @@ export class ProposalWorker {
 				},
 				evaluated.report,
 			);
+			assertActive();
 			state = this.engine.completeProposalEvaluation({
 				...command,
 				actorId: "blackx-worker",

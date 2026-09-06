@@ -3,10 +3,16 @@ import { requirementBriefFixtures } from "./requirementBrief.fixtures";
 import { evaluateRequirementBrief, normalizeRequirementFactKey } from "./requirementBrief";
 
 describe("M2 Requirement Brief baseline", () => {
-	it("keeps ten fixed Print and Furniture tasks on one deterministic contract", () => {
+	it("rejects retired industries and their fields in new artifacts", () => {
+		const artifact = structuredClone(requirementBriefFixtures[0]!.artifact);
+		expect(evaluateRequirementBrief({ ...artifact, industry: "furniture" })).toMatchObject({ passed: false, approvalEligible: false, issues: expect.arrayContaining([expect.objectContaining({ code: "invalid_industry" })]) });
+		artifact.facts.push({ ...artifact.facts[0], key: "installation_required", value: true });
+		expect(evaluateRequirementBrief(artifact)).toMatchObject({ passed: false, approvalEligible: false, issues: expect.arrayContaining([expect.objectContaining({ code: "unsupported_fact" })]) });
+	});
+	it("keeps ten packaging tasks on one deterministic contract", () => {
 		expect(requirementBriefFixtures).toHaveLength(10);
 		expect(new Set(requirementBriefFixtures.map((fixture) => fixture.industry))).toEqual(
-			new Set(["print", "furniture"]),
+			new Set(["print"]),
 		);
 		for (const fixture of requirementBriefFixtures) {
 			expect(evaluateRequirementBrief(fixture.artifact), fixture.fixtureId).toMatchObject({
@@ -47,15 +53,15 @@ describe("M2 Requirement Brief baseline", () => {
 	});
 
 	it("normalizes known aliases and rejects non-canonical Artifact Facts", () => {
-		expect(normalizeRequirementFactKey("furniture", "Product Type")).toBe("furniture_type");
-		expect(normalizeRequirementFactKey("furniture", "quantity_reference")).toBe("quantity");
-		expect(normalizeRequirementFactKey("furniture", "focus_areas")).toBeUndefined();
+		expect(normalizeRequirementFactKey("print", "Packaging Type")).toBe("product_type");
+		expect(normalizeRequirementFactKey("print", "quantity_reference")).toBe("quantity");
+		expect(normalizeRequirementFactKey("print", "installation_required")).toBeUndefined();
 
 		const artifact = structuredClone(requirementBriefFixtures[5]!.artifact);
 		artifact.facts.push({
 			key: "focus_areas",
 			version: 1,
-			value: "尺寸与安装",
+			value: "尺寸与稿件",
 			status: "unverified",
 			sourceType: "model_output",
 			sourceRef: "runtime:test",

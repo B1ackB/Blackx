@@ -130,6 +130,8 @@ export class BackgroundTaskApiController {
 
 	list(context: ConversationApiContext, conversationIdValue: unknown): ConversationApiResponse {
 		try {
+			const access = this.conversations.get(context, conversationIdValue);
+			if (access.status !== 200) return access;
 			const tenantId = id(context.tenantId, "tenantId");
 			const workspaceId = id(context.workspaceId, "workspaceId");
 			const conversationId = id(conversationIdValue, "conversationId");
@@ -154,7 +156,7 @@ export class BackgroundTaskApiController {
 			const job = this.queue.get(idValue);
 			return job?.stageId === "conversation-background" &&
 				job.tenantId === tenantId &&
-				job.workspaceId === workspaceId
+				job.workspaceId === workspaceId && this.conversations.get(context, job.runId).status === 200
 				? { status: 200, body: { task: backgroundTaskView(job) } }
 				: { status: 404, body: { code: "background_task_not_found" } };
 		} catch (error) {

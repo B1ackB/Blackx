@@ -49,6 +49,24 @@ afterEach(() => {
 });
 
 describe("FileAgentStateStore", () => {
+	it("persists an idempotent deletion tombstone and rejects late saves or recreation after restart", () => {
+		const { root, state } = store();
+		const now = "2026-09-05T00:00:00.000Z";
+		state.save(scope, 0, [{ role: "user", content: "artifact source" }], now);
+		expect(state.deleteSession({ ...scope, tenantId: "other" }, "user", now)).toBeUndefined();
+		const deleted = state.deleteSession(scope, "user", now)!;
+		const restarted = new FileAgentStateStore(root);
+		expect(restarted.getSession(scope)).toBeUndefined();
+		expect(restarted.listSessions(scope)).toEqual([]);
+		expect(restarted.listSessions(scope, true)).toEqual([deleted]);
+		expect(deleted.messages[0].content).toBe("artifact source");
+		expect(deleted.deletion).toEqual({ actorId: "user", deletedAt: now });
+		expect(restarted.deleteSession(scope, "another-user", "2026-09-06T00:00:00.000Z")).toEqual(deleted);
+		for (const revision of [0, 1, deleted.revision]) expect(() => restarted.save(scope, revision, [], now)).toThrow("deleted");
+		expect(() => restarted.createSession(scope, now)).toThrow("deleted");
+		expect(() => restarted.load(scope)).toThrow("deleted");
+	});
+
 	it("persists a tenant-scoped Session with optimistic concurrency", () => {
 		const { root, state } = store();
 		const saved = state.save(scope, 0, [{ role: "user", content: "secret" }], "2026-09-02T00:00:00.000Z");

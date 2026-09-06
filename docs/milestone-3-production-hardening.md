@@ -1,6 +1,6 @@
 # M3：Local Product Hardening 与 Native Sandbox Gate
 
-状态：In Progress / Local Isolation Architecture Accepted / Slice 2 Seatbelt Baseline Implemented / G0–G6 Not Passed
+状态：In Progress / Native Document Product Slice Implemented / G0–G6 Not Passed
 规划日期：2026-09-05
 前置条件：M0–M2 Engineering Baselines Frozen
 
@@ -8,7 +8,7 @@
 
 M0–M2 已证明单机 Agent Loop、Queue、Worker、Artifact、Evaluation、Approval、恢复和多租户标识可以形成工程闭环，但仍是开发基线，不是可直接交付的本地产品安全基线。
 
-当前 `sandboxMode: read-only | workspace-write` 仍是 Agent Tool 的 Host 逻辑权限条件。Host built-in Tool 在服务端 Node.js 进程内调用 `tool.execute()`；显式 `sandboxed` Tool 已通过 `SandboxedToolExecutorPort` 路由。在 macOS composition root 中，未显式注入 Fake 时会使用真实 Seatbelt Adapter，并按 `BLACKX_WORKSPACE_ROOT` 或当前目录约束路径；非 macOS 仍 fail-closed。当前尚未接入正式 `asset_metadata_inspect` Tool、域名 allowlist Host Proxy、进程数/内存限制和 Artifact 导入，因此 G2 仍未通过。
+当前 `sandboxMode: read-only | workspace-write` 是 Agent Tool 的 Host 逻辑权限条件。Host built-in Tool 在 Node.js 中运行；显式 `sandboxed` Tool 通过 `SandboxedToolExecutorPort` 路由。macOS composition root 已注册正式 `asset_metadata_inspect`，使用 Seatbelt 执行固定 Swift 解析器并导入版本化 Artifact；非 macOS fail-closed。本次补齐 lease 提交检查、来源缓存恢复、Host 身份绑定和交付界面。域名 allowlist Proxy、通用进程数/内存硬限制、完整 Crash/孤儿清理矩阵仍未完成，因此 G2/G3 及完整 M3 尚未通过。见 [ADR-0009](adr/0009-local-document-delivery-slice.md)。
 
 M3 改为 Claude Code/Codex 风格的本地运行模式：用户现有电脑就是执行机器，Agent Loop 和 Provider Adapter 作为本地受信控制进程运行；模型驱动的命令和外部 Tool 子进程必须由原生 OS Sandbox 隔离。当前主平台为 macOS，优先复用系统自带 Seatbelt，不要求 Docker、额外 Linux 主机或云端 Runner。
 
@@ -223,9 +223,13 @@ G2 至少使用一个固定测试 executable 验证：
 
 ### Slice 3：M2 正式纵向切片
 
-- Agent Loop 留在 Local Host，把 `asset_metadata_inspect` 放入 Native Tool Sandbox。
-- 通过 Queue → Local Worker → Agent Loop → Sandboxed Tool → Artifact Version 链路运行。
-- 覆盖 pause/resume、重复投递、五类 Crash、lease fencing、取消、孤儿进程清理、指标和 UI 权限状态。
+- [x] Agent Loop 留在 Local Host，正式 `asset_metadata_inspect` 在 Native Tool Sandbox 运行。
+- [x] Queue → Worker → Agent Loop → Seatbelt PDFKit → Artifact → 版本导出实测通过。
+- [x] Checkpoint 后中断恢复不重复调用模型/解析器；lease 丢失立即取消，迟到结果不提交。
+- [x] 本机访问凭据、实际工具进度、停止/重试、附件来源和 UI 权限说明。
+- [ ] 补齐全部五类 Crash、跨分片资料矩阵、Host 硬崩溃孤儿进程清理和通用资源限制；不把现有切片提升为完整 G3。
+
+本次证据见[本地产品切片验收](evidence/local-product-slice-2026-09-05.md)。
 
 ### Slice 4：本地发行 Gate
 

@@ -29,7 +29,7 @@ Blackx Agent Core
 └── Skill / Configuration
 ```
 
-M2 首个产品闭环已冻结为定制制造售前需求澄清：面向印刷、包装和定制家具企业的售前/跟单人员，把客户 Brief 转为可确认、可版本化、可审批的 `RequirementBrief`。Blackx Print 保留为 Domain Pack 和回归资产；Furniture 通过独立 Domain Pack 接入，二者都不定义通用 Agent Core。
+M2 当前产品闭环收敛为包装售前需求澄清：面向包装企业的售前/跟单人员，把客户 Brief 转为可确认、可版本化、可审批的 `RequirementBrief`。Blackx Print 承载包装 Domain Pack，内部保留 `industry=print` 以兼容已有包装数据；家具行业已退出当前产品范围。见 [ADR-0010](../adr/0010-packaging-product-focus.md)。
 
 Agent Core 保持行业无关：它只执行一次受限 Agent Turn，不拥有企业 Workflow，也不包含印刷业务条件分支。
 

@@ -1,4 +1,4 @@
-export type ManufacturingIndustry = "print" | "furniture";
+export type ManufacturingIndustry = "print";
 
 export type RequirementFactStatus = "suggested" | "unverified" | "verified";
 
@@ -47,15 +47,6 @@ export const requiredRequirementFacts: Record<ManufacturingIndustry, readonly st
 		"delivery_location",
 		"artwork_status",
 	],
-	furniture: [
-		"furniture_type",
-		"quantity",
-		"dimensions",
-		"use_environment",
-		"target_delivery",
-		"delivery_location",
-		"installation_required",
-	],
 };
 
 const requirementFactAliases: Record<ManufacturingIndustry, Record<string, string>> = {
@@ -76,23 +67,6 @@ const requirementFactAliases: Record<ManufacturingIndustry, Record<string, strin
 		artwork: "artwork_status",
 		design_status: "artwork_status",
 	},
-	furniture: {
-		product_type: "furniture_type",
-		cabinet_type: "furniture_type",
-		furniture_product: "furniture_type",
-		order_quantity: "quantity",
-		quantity_reference: "quantity",
-		size: "dimensions",
-		measurements: "dimensions",
-		environment: "use_environment",
-		room: "use_environment",
-		delivery_date: "target_delivery",
-		deadline: "target_delivery",
-		ship_to: "delivery_location",
-		destination: "delivery_location",
-		installation: "installation_required",
-		install_required: "installation_required",
-	},
 };
 
 export function normalizeRequirementFactKey(
@@ -110,7 +84,7 @@ export const requirementBriefOutputSchema = {
 	type: "object",
 	properties: {
 		schemaVersion: { const: "requirement-brief.v1" },
-		industry: { enum: ["print", "furniture"] },
+		industry: { enum: ["print"] },
 		title: { type: "string", minLength: 1 },
 		customerGoal: { type: "string", minLength: 1 },
 		facts: {
@@ -168,7 +142,7 @@ export function createRequirementBrief(input: {
 		schemaVersion: "requirement-brief.v1",
 		industry: input.industry,
 		title: input.title.trim() || "Customer Requirement Brief",
-		customerGoal: input.customerGoal.trim() || "Clarify the customer's manufacturing requirement",
+		customerGoal: input.customerGoal.trim() || "Clarify the customer's packaging requirement",
 		facts,
 		missingRequiredFacts,
 		assumptions: input.assumptions?.filter((value) => value.trim()).map((value) => value.trim()) ?? [],
@@ -223,10 +197,10 @@ export function evaluateRequirementBrief(value: unknown): RequirementBriefEvalua
 	if (Object.keys(value).some((key) => !briefKeys.has(key))) {
 		issue("unexpected_field", "Requirement Brief contains an unexpected field");
 	}
-	const industry = value.industry === "print" || value.industry === "furniture"
+	const industry = value.industry === "print"
 		? value.industry
 		: undefined;
-	if (!industry) issue("invalid_industry", "Industry must be print or furniture");
+	if (!industry) issue("invalid_industry", "Only packaging requirements (print) are supported");
 	if (typeof value.title !== "string" || !value.title.trim()) {
 		issue("missing_title", "Requirement Brief title is required");
 	}

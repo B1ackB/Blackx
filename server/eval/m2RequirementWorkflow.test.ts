@@ -17,11 +17,11 @@ describe("M2 Requirement Brief workflow baseline", () => {
 		const report = await runM2RequirementWorkflow(directory);
 
 		expect(report).toMatchObject({
-			contract: "blackx-m2-requirement-workflow-baseline-v2",
+			contract: "blackx-m2-packaging-workflow-baseline-v3",
 			passed: true,
 			fixtures: 10,
 			approvalEligible: 4,
-			industries: { print: 5, furniture: 5 },
+			industries: { print: 10 },
 		});
 		expect(report.results).toHaveLength(10);
 		expect(report.results.every((result) => result.toolReadSucceeded)).toBe(true);

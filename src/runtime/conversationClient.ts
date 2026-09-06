@@ -1,4 +1,8 @@
+import type { ModelTelemetryView } from "./modelTelemetry";
 import type { RuntimeHealth } from "./contracts";
+import type { ConversationFilesView, TaskFileVersion, LocalDirectoryListing, LocalFileLocations } from "./conversationFiles";
+import type { RequirementDelivery } from "../manufacturing/requirementDelivery";
+import type { RuntimeActivity } from "./conversationContracts";
 import type { RuntimeTraceRecord } from "./contracts";
 import type {
 	BackgroundTaskView,
@@ -23,11 +27,14 @@ export class ConversationClientError extends Error {
 	}
 }
 
-const identityHeaders = {
-	"x-blackx-tenant-id": "local-user",
-	"x-blackx-workspace-id": "default-workspace",
-	"x-blackx-actor-id": "local-user",
-};
+let localSession: Promise<{ token: string }> | undefined;
+async function accessHeaders(): Promise<Record<string, string>> {
+	localSession ??= fetch("/api/local-session", { cache: "no-store" }).then(async (response) => {
+		if (!response.ok) throw new ConversationClientError("local_access_denied", "无法建立本地会话，请使用服务端显示的本机地址。");
+		return response.json() as Promise<{ token: string }>;
+	}).catch((error) => { localSession = undefined; throw error; });
+	return { "x-blackx-session-token": (await localSession).token };
+}
 
 async function request<Value>(path: string, init?: RequestInit): Promise<Value> {
 	let response: Response;
@@ -35,7 +42,7 @@ async function request<Value>(path: string, init?: RequestInit): Promise<Value> 
 		response = await fetch(path, {
 			...init,
 			headers: {
-				...identityHeaders,
+				...await accessHeaders(),
 				...(typeof init?.body === "string" ? { "content-type": "application/json" } : {}),
 				...init?.headers,
 			},
@@ -58,7 +65,7 @@ async function attachmentRequest(path: string, init?: RequestInit): Promise<Resp
 	try {
 		response = await fetch(path, {
 			...init,
-			headers: { ...identityHeaders, ...init?.headers },
+			headers: { ...await accessHeaders(), ...init?.headers },
 		});
 	} catch {
 		throw new ConversationClientError("runtime_unavailable", "无法连接 Blackx 服务端");
@@ -74,6 +81,52 @@ async function attachmentRequest(path: string, init?: RequestInit): Promise<Resp
 }
 
 export class ConversationClient {
+	modelCalls(conversationId: string, requirement = false): Promise<ModelTelemetryView> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/model-calls${requirement ? "?run=requirement" : ""}`);
+	}
+	fileLocations(conversationId: string): Promise<LocalFileLocations> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/directories`);
+	}
+	browseDirectory(conversationId: string, path: string): Promise<LocalDirectoryListing> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/directories?${new URLSearchParams({ path })}`);
+	}
+	readLocalFile(conversationId: string, path: string): Promise<{ absolutePath: string; content: string; sha256: string }> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/local-content?${new URLSearchParams({ path })}`);
+	}
+	files(conversationId: string): Promise<ConversationFilesView> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files`);
+	}
+	readFile(conversationId: string, path: string, version: number): Promise<{ file: TaskFileVersion; content: string }> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/content?${new URLSearchParams({ path, version: String(version) })}`);
+	}
+	decideFile(conversationId: string, approvalId: string, decision: "approved" | "rejected"): Promise<ConversationFilesView> {
+		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/approvals/${encodeURIComponent(approvalId)}`, { method: "POST", body: JSON.stringify({ decision }) });
+	}
+	async delete(conversationId: string): Promise<void> {
+		await request(`/api/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
+	}
+
+	async stop(conversationId: string): Promise<void> {
+		await request(`/api/conversations/${encodeURIComponent(conversationId)}/stop`, { method: "POST" });
+	}
+
+	async retry(conversationId: string): Promise<ConversationView> {
+		return (await request<{ conversation: ConversationView }>(`/api/conversations/${encodeURIComponent(conversationId)}/retry`, { method: "POST" })).conversation;
+	}
+
+	async activity(conversationId: string, requirement = false): Promise<RuntimeActivity | undefined> {
+		return (await request<{ activity?: RuntimeActivity }>(`/api/conversations/${encodeURIComponent(conversationId)}/activity${requirement ? "?run=requirement" : ""}`)).activity;
+	}
+
+	async delivery(conversationId: string, version: number): Promise<RequirementDelivery> {
+		return (await request<{ delivery: RequirementDelivery }>(`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/versions/${version}`)).delivery;
+	}
+
+	async exportDelivery(conversationId: string, version: number, format: "md" | "html" | "json"): Promise<Blob> {
+		const response = await attachmentRequest(`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/versions/${version}?format=${format}`);
+		return response.blob();
+	}
+
 	health(): Promise<RuntimeHealth> {
 		return request<RuntimeHealth>("/api/runtime/health");
 	}
@@ -230,11 +283,10 @@ export class ConversationClient {
 	async startRequirementBrief(
 		conversationId: string,
 		requestId: string,
-		industry: "print" | "furniture",
 	): Promise<RequirementBriefWorkspaceView> {
 		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
 			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief`,
-			{ method: "POST", body: JSON.stringify({ requestId, industry }) },
+			{ method: "POST", body: JSON.stringify({ requestId, industry: "print" }) },
 		)).requirementBrief;
 	}
 

@@ -5,7 +5,7 @@
 
 ## 1. 产品定位
 
-Blackx 是以自研 Agent Core 驱动的定制制造需求与交付物 Agent，不是一张要求客户填写全部工程参数的表单。M2 首批面向印刷、包装和定制家具企业的售前/跟单人员，统一生成 Requirement Brief；本文件后续的包装字段继续作为 Print Domain Pack 的详细参考，Furniture 遵守相同的来源、确认和最少提问原则。
+Blackx 当前是以自研 Agent Core 驱动的包装需求与交付物 Agent。M2 面向包装企业的售前/跟单人员，生成带来源与版本的 Requirement Brief。页面直接进入包装任务，不再选择行业；本文件后续包装字段作为 Print Domain Pack 的详细参考，继续遵守来源、人工确认和最少提问原则。
 
 用户表达业务目标、上传已有资料并确认关键约束；Blackx 使用包装行业知识、权威标准、企业数据和确定性工具完成调查、提出方案、解释风险并生成可追溯 Artifact。Blackx Agent Core 负责通用 Agent Loop、Session、模型调用、Hook、Tool、Context、Skill 和 Compact，不承载包装行业条件分支。
 

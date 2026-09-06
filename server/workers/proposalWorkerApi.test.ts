@@ -47,7 +47,7 @@ function harness(
 	);
 	const scheduler = new StageJobScheduler(queue, {
 		workerId: "worker-api",
-		handlers: { proposal: (lease) => worker.executeLease(lease) },
+		handlers: { proposal: (lease, signal, guard) => worker.executeLease(lease, signal, guard) },
 	});
 	const controller = new ProposalWorkerApiController(
 		scheduler,

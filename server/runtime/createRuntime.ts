@@ -1,8 +1,10 @@
+import { ModelTelemetryStore } from "./modelTelemetry";
+import { RuntimeActivityStore } from "./runtimeActivity";
 import { resolve } from "node:path";
 import { SkillRegistry } from "../../src/agent/skills";
 import { printSkills } from "../../src/print/skills";
 import { manufacturingSkills } from "../../src/manufacturing/skills";
-import type { AgentTool } from "../../src/agent/contracts";
+import type { AgentTool, AgentToolApprovalPort } from "../../src/agent/contracts";
 import type { SandboxedToolExecutorPort } from "../../src/agent/sandbox";
 import type { AgentRuntimePort } from "../../src/runtime/contracts";
 import { AnthropicMessagesClient } from "../anthropic/client";
@@ -15,10 +17,13 @@ import { MacOsSeatbeltSandboxedToolExecutor } from "./macOsSeatbeltSandboxedTool
 export interface RuntimeServices {
 	runtime: AgentRuntimePort;
 	state: FileAgentStateStore;
+	activity: RuntimeActivityStore;
+	telemetry: ModelTelemetryStore;
 }
 
 export interface RuntimeServicesOptions {
 	tools?: readonly AgentTool[];
+	approval?: AgentToolApprovalPort;
 	sandboxedToolExecutor?: SandboxedToolExecutorPort;
 	autonomouslyApprovedTools?: ReadonlySet<string>;
 	resolveImageAttachment?: BlackxAgentRuntimeOptions["resolveImageAttachment"];
@@ -43,6 +48,8 @@ export function createRuntime(
 	environment: NodeJS.ProcessEnv,
 	options: RuntimeServicesOptions = {},
 ): RuntimeServices {
+  const activity = new RuntimeActivityStore();
+	const telemetry = new ModelTelemetryStore(resolve(environment.BLACKX_AGENT_STATE_PATH ?? ".blackx-data/agent", "model-calls"), (environment.BLACKX_RUNTIME_MODE ?? "fake") === "anthropic" ? environment.ANTHROPIC_MODEL ?? "unconfigured" : "fake");
   const mode = environment.BLACKX_RUNTIME_MODE ?? "fake";
 	const state = new FileAgentStateStore(environment.BLACKX_AGENT_STATE_PATH ?? ".blackx-data/agent");
 	const sandboxedToolExecutor = options.sandboxedToolExecutor ?? (process.platform === "darwin"
@@ -60,6 +67,8 @@ export function createRuntime(
 				resolveImageAttachment: options.resolveImageAttachment,
 			}),
 			state,
+			activity,
+			telemetry,
 		};
   }
 
@@ -75,6 +84,8 @@ export function createRuntime(
     const baseUrl = validateAnthropicBaseUrl(configuredBaseUrl);
 		return {
 			runtime: new BlackxAgentRuntime({
+				telemetry,
+				onActivity: (scope, event) => activity.observe(scope, event),
 				provider: new AnthropicModelProvider(
 					new AnthropicMessagesClient({ baseUrl, apiKey }),
 					model,
@@ -84,9 +95,9 @@ export function createRuntime(
 				sandboxedToolExecutor,
 				resolveImageAttachment: options.resolveImageAttachment,
 				approval: {
-					authorize: async (request) => options.autonomouslyApprovedTools?.has(request.tool)
+					authorize: async (request, signal) => options.autonomouslyApprovedTools?.has(request.tool)
 						? { approved: true, approvalId: `policy:${request.tool}:v1` }
-						: { approved: false },
+						: options.approval?.authorize(request, signal) ?? { approved: false },
 				},
 				audit: state,
 				sessions: state,
@@ -95,6 +106,8 @@ export function createRuntime(
 				executions: state,
 			}),
 			state,
+			activity,
+			telemetry,
 		};
   }
 
