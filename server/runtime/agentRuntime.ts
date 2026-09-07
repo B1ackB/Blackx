@@ -145,7 +145,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 			sessionId,
 		};
 
-		const progress = (phase: RuntimeActivity["phase"], detail: { tool?: string; iteration?: number } = {}) => {
+		const progress = (phase: RuntimeActivity["phase"], detail: { tool?: string; iteration?: number; partialText?: string } = {}) => {
 			this.options.onActivity?.(scope, { executionId, phase, updatedAt: this.now(), ...detail });
 		};
 		try {
@@ -210,10 +210,17 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 					summaries: event.summary ? 1 : 0,
 				});
 			});
+			let partialText = "";
+			hooks.on("model.delta", (event) => {
+				combinedSignal.throwIfAborted();
+				partialText = (partialText + event.text).slice(0, 128_000);
+				progress("model", { iteration: event.iteration, partialText });
+			});
 			hooks.on("tool.before", (event) => { progress("tool", { tool: event.call.name, iteration: event.iteration }); });
 			hooks.on("model.before", (event) => {
 				combinedSignal.throwIfAborted();
-				progress("model", { iteration: event.iteration });
+				partialText = "";
+				progress("model", { iteration: event.iteration, partialText });
 				const snapshotId = `${snapshotBaseId}-i${event.iteration}${event.attempt > 1 ? `-retry${event.attempt}` : ""}`;
 				const saved = this.snapshots.put({
 					schemaVersion: "context-snapshot.v2",

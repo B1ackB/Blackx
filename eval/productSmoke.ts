@@ -1,3 +1,4 @@
+import { readEvents } from "../src/runtime/eventStream";
 import { summarizeModelCalls, type ModelTelemetryView } from "../src/runtime/modelTelemetry";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -41,6 +42,13 @@ const provider = createServer(async (request, response) => {
 		const sourceRef = raw.match(/attachment:\/\/[^\s"\\]+/g)?.[0]?.replace(/#page=\d+$/, "") ?? "runtime:fixture";
 		const values: Record<string, string | number> = { product_type: "咖啡豆自立袋", quantity: 5000, dimensions: "160 × 230 + 80 mm", target_market: "香港", target_delivery: "2026-11-30", delivery_location: "香港九龙", artwork_status: "品牌稿待提供" };
 		content = [{ type: "text", text: JSON.stringify(createRequirementBrief({ industry: "print", title: "咖啡包装需求单", customerGoal: "整理客户资料，确认数量、尺寸与交付要求。", facts: requiredRequirementFacts.print.map((key) => ({ key, version: 1, value: values[key]!, status: "unverified", sourceType: "model_output", sourceRef: `${sourceRef}#page=1` })) })) }];
+	} else if (JSON.stringify(last).includes("Attached source references") && !last.some((block) => block.type === "tool_result")) {
+		const id = JSON.stringify(last).match(/attachment-[a-f0-9]+/)?.[0];
+		content = [{ type: "tool_use", id: "document-read", name: "document_read", input: { attachmentId: id } }];
+	} else if (last.some((block) => block.type === "tool_result" && block.tool_use_id === "document-read")) {
+		const result = last.find((block) => block.type === "tool_result");
+		const parsed = JSON.parse(JSON.parse(result!.type === "tool_result" ? result!.content : "{}").stdout.text);
+		content = [{ type: "text", text: `Read ${parsed.name} (${parsed.inspection.status}).\n\n${parsed.inspection.pages.map((page: { text: string }) => page.text).join("\n")}\n\nValues remain unverified until you confirm them.` }];
 	} else if (JSON.stringify(last).includes("本地文件测试") && !last.some((block) => block.type === "tool_result")) {
 		const remove = JSON.stringify(last).includes("删除");
 		const previous = existsSync(localDocument) ? readFileSync(localDocument, "utf8") : undefined;
@@ -59,7 +67,24 @@ const provider = createServer(async (request, response) => {
 		await new Promise((resolve) => setTimeout(resolve, text.includes("停止测试") ? 5000 : 350));
 		content = [{ type: "text", text: "## 已收到你的需求\n\n先核对资料中的信息，再生成需求单。\n\n| 项目 | 当前状态 |\n| --- | --- |\n| 附件 | 已保存，生成需求单时解析 |\n| 关键字段 | 等待确认 |\n\n- 核对数量和交付地点\n- 补充设计稿状态\n\n```text\n资料 → 核对 → 生成版本 → 确认交付\n```\n\n这是本地固定测试响应。" }];
 	}
-	response.end(JSON.stringify({ id: "fixture-response", type: "message", role: "assistant", model: "local-fixture", content, stop_reason: requirement && !last.some((block) => block.type === "tool_result") ? "tool_use" : "end_turn", usage: { input_tokens: 100, output_tokens: 80, cache_read_input_tokens: 50, cache_creation_input_tokens: 50 } }));
+	const result = { id: "fixture-response", type: "message", role: "assistant", model: "local-fixture", content, stop_reason: content.some((block) => (block as { type: string }).type === "tool_use") ? "tool_use" : "end_turn", usage: { input_tokens: 100, output_tokens: 80, cache_read_input_tokens: 50, cache_creation_input_tokens: 50 } };
+	if (!body.stream) { response.end(JSON.stringify(result)); return; }
+	response.setHeader("content-type", "text/event-stream");
+	const emit = (event: unknown) => response.write(`data: ${JSON.stringify(event)}\n\n`);
+	emit({ type: "message_start", message: { ...result, content: [], stop_reason: null, usage: { ...result.usage, output_tokens: 0 } } });
+	for (const [index, raw] of content.entries()) {
+		const block = raw as { type: string; text?: string; input?: unknown };
+		emit({ type: "content_block_start", index, content_block: block.type === "text" ? { ...block, text: "" } : { ...block, input: {} } });
+		const parts = [...(block.text ?? JSON.stringify(block.input))];
+		for (let offset = 0; offset < parts.length; offset += 20) {
+			emit({ type: "content_block_delta", index, delta: block.type === "text" ? { type: "text_delta", text: parts.slice(offset, offset + 20).join("") } : { type: "input_json_delta", partial_json: parts.slice(offset, offset + 20).join("") } });
+			await new Promise((resolve) => setTimeout(resolve, serve ? 40 : 4));
+		}
+		emit({ type: "content_block_stop", index });
+	}
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	emit({ type: "message_delta", delta: { stop_reason: result.stop_reason }, usage: { output_tokens: 80 } });
+	emit({ type: "message_stop" }); response.end();
 });
 provider.listen(0, "127.0.0.1"); await once(provider, "listening");
 const providerPort = (provider.address() as { port: number }).port;
@@ -102,6 +127,17 @@ try {
 	}
 	const id = (await api("/api/conversations", {})).conversation.conversationId as string;
 	const path = `/api/conversations/${id}`;
+	// Observe real HTTP text before the message POST has completed, with authenticated SSE.
+	assert.equal((await fetch(`${baseUrl}${path}/activity?stream=1`)).status, 403);
+	const streamController = new AbortController();
+	const eventResponse = await fetch(`${baseUrl}${path}/activity?stream=1`, { headers, signal: streamController.signal });
+	assert(eventResponse.headers.get("content-type")?.includes("text/event-stream"));
+	let firstText!: () => void; const streamed = new Promise<void>((resolve) => { firstText = resolve; });
+	const consuming = (async () => { try { for await (const event of readEvents(eventResponse.body!, streamController.signal)) { if (JSON.parse(event.data).activity?.partialText) firstText(); } } catch (error) { if (!streamController.signal.aborted) throw error; } })();
+	let completedReply = false;
+	const streamedReply = api(`${path}/messages`, { messageId: "stream-1", content: "流式输出测试" }).then(() => { completedReply = true; });
+	await Promise.race([streamed, new Promise((_, reject) => setTimeout(() => reject(new Error("No streamed text")), 10_000).unref())]);
+	assert.equal(completedReply, false); await streamedReply; streamController.abort(); await consuming;
 	async function pendingFor(conversationPath: string) {
 		for (let i = 0; i < 100; i++) { const view = await fetch(`${baseUrl}${conversationPath}/files`, { headers }).then((response) => response.json()) as ConversationFilesView; if (view.approvals[0]) return view.approvals[0]; await new Promise((resolve) => setTimeout(resolve, 50)); }
 		throw new Error("File approval not requested");
@@ -193,6 +229,7 @@ try {
 	assert(!JSON.stringify(metrics).includes("offline-fixture-only"));
 
 	if (serve) {
+		for (const name of ["packaging.docx", "packaging.xlsx"]) writeFileSync(join(documents, name), readFileSync(`server/testing/documents/${name}`));
 		writeFileSync(localDocument, "# 客户包装需求\n客户原文，尚未被 Agent 修改。");
 		console.log(JSON.stringify({ mode: "offline-browser-fixture", url: baseUrl, conversationId: id, fixtureDirectory: directory, localDirectory: documents, checks: "auth + real native PDF slice passed; draft ready" }));
 		await new Promise(() => {});
@@ -233,6 +270,6 @@ try {
 		assert(schedules.list({ tenantId: "local-user", workspaceId: "default-workspace" }).every((schedule) => schedule.status === "paused"));
 		const retained = new ProposalRunEngine(new FileEnterpriseEventStore(join(directory, "events.json")), "requirement-brief").load({ tenantId: "local-user", workspaceId: "default-workspace", runId: start.requirementBrief.runId });
 		assert.equal(retained.stageStatus, "passed"); assert.equal(retained.approval?.status, "approved");
-		console.log("PASS: durable scoped model calls, cache usage, cancellation telemetry, Agent-triggered per-operation approval without directory grants, approved creation/modification/deletion at absolute paths, original-content backups, retired grant APIs, all-write approval, scoped history, same-message isolation, native PDF slice, workflow approval/exports, cancellation, conversation deletion and audit retention; provider = local deterministic fixture.");
+		console.log("PASS: authenticated live SSE before completion, durable scoped model calls, cache usage, cancellation telemetry, Agent-triggered per-operation approval without directory grants, approved creation/modification/deletion at absolute paths, original-content backups, retired grant APIs, all-write approval, scoped history, same-message isolation, native PDF slice, workflow approval/exports, cancellation, conversation deletion and audit retention; provider = local deterministic fixture.");
 	}
 } finally { await close(); }

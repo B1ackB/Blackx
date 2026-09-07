@@ -259,7 +259,10 @@ export class AgentLoop {
 						estimatedTokens,
 					});
 					try {
-						response = await this.options.provider.generate(this.modelRequest(messages, allowedTools, input), signal);
+						response = await this.options.provider.generate({ ...this.modelRequest(messages, allowedTools, input), onText: async (text) => {
+							signal?.throwIfAborted();
+							await this.hooks.emit({ name: "model.delta", runId: input.runId, iteration, text });
+						} }, signal);
 						break;
 					} catch (error) {
 						if (attempt === 1 && nestedCode(error) === "context_window_exceeded") {

@@ -1,3 +1,4 @@
+import { errorText, validationText } from "./i18n";
 import { ModelMonitor } from "./components/ModelMonitor";
 import { FileExplorer } from "./components/FileExplorer";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
@@ -5,7 +6,7 @@ import { Markdown } from "./components/Markdown";
 import { ConversationFiles } from "./components/ConversationFiles";
 import { DeleteConversationDialog } from "./components/DeleteConversationDialog";
 import { DeliveryPreview } from "./components/DeliveryPreview";
-import { requirementFieldLabels, factStatusLabels, inspectionStatusLabels } from "./manufacturing/requirementDelivery";
+import { requirementFieldLabels, factStatusLabels } from "./manufacturing/requirementDelivery";
 import { languageNames, labelFor, statusFor, type Language } from "./i18n";
 import type { AssetInspectionRecord } from "./runtime/assetInspection";
 import { requiredRequirementFacts } from "./manufacturing/requirementBrief";
@@ -72,17 +73,7 @@ function attachmentIdFromSourceRef(sourceRef: string): string | undefined {
 	return /^attachment:\/\/[^/]+\/(attachment-[A-Za-z0-9]+)$/.exec(sourceRef)?.[1];
 }
 
-function errorMessage(error: unknown): string {
-	const en = document.documentElement.lang === "en";
-	if (error instanceof ConversationClientError) {
-		if (error.code === "real_provider_required") {
-			return en ? "The service is not using a live model. Start it with BLACKX_RUNTIME_MODE=anthropic." : "当前服务不是实际模型模式。请使用 BLACKX_RUNTIME_MODE=anthropic 启动。";
-		}
-		if (error.code === "runtime_unavailable") return en ? "Unable to connect to the Blackx server." : "无法连接 Blackx 服务端";
-		return error.message;
-	}
-	return en ? "Request failed. Check the server log and try again." : "请求失败，请检查服务端日志后重试。";
-}
+function errorMessage(error: unknown): string { return errorText(error, document.documentElement.lang === "en" ? "en" : "zh"); }
 
 function requirementContent(value: unknown): RequirementBriefV1 | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -155,7 +146,7 @@ function App() {
 	};
 	const [draft, setDraft] = useState("");
 	const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
-	const [parsedSources, setParsedSources] = useState<AssetInspectionRecord[]>([]);
+	const [, setParsedSources] = useState<AssetInspectionRecord[]>([]);
 	const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
 	const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
 	const [uploading, setUploading] = useState(false);
@@ -185,6 +176,7 @@ function App() {
 	useEffect(() => {
 		localStorage.setItem("blackx-language", language);
 		document.documentElement.lang = language === "en" ? "en" : "zh-CN";
+		document.title = language === "en" ? "Blackx · Packaging Workspace" : "Blackx · 包装需求工作区";
 	}, [language]);
 
 	useEffect(() => {
@@ -308,7 +300,7 @@ function App() {
 					if (cancelled) return;
 					if (next) setRequirement(next);
 					if (next?.job?.status === "dead_letter") {
-						setError(`Requirement Worker 失败：${next.job.lastFailure?.message ?? "已进入死信队列"}`);
+						setError(errorMessage(next.job.lastFailure));
 					}
 				})
 				.catch((reason) => { if (!cancelled) setError(errorMessage(reason)); });
@@ -367,7 +359,7 @@ function App() {
 						await refreshList(updated);
 					}
 					const failed = updatedTasks.find((task) => task.status === "dead_letter");
-					if (failed) setError(`后台任务失败：${failed.lastFailure?.message ?? "已进入死信队列"}`);
+					if (failed) setError(errorMessage(failed.lastFailure));
 				})
 				.catch((reason) => { if (!cancelled) setError(errorMessage(reason)); });
 		}, 750);
@@ -376,9 +368,9 @@ function App() {
 
 	useEffect(() => {
 		const view = chatScrollRef.current;
-		if (!view || (!sending && !followChatRef.current)) return;
-		view.scrollTo({ top: view.scrollHeight, behavior: "smooth" });
-	}, [active?.conversationId, active?.messages.length, sending]);
+		if (!view || !followChatRef.current) return;
+		view.scrollTo({ top: view.scrollHeight, behavior: activity?.partialText ? "auto" : "smooth" });
+	}, [active?.conversationId, active?.messages.length, sending, activity?.partialText]);
 
 	const refreshList = async (_current: ConversationView) => {
 		const next = await client.list(language);
@@ -533,7 +525,7 @@ function App() {
 			setAttachments(await client.listAttachments(active.conversationId));
 			setSelectedAttachmentIds((current) => [...new Set([
 				...current,
-				...uploaded.filter((attachment) => attachment.modelInput === "image").map((attachment) => attachment.attachmentId),
+				...uploaded.map((attachment) => attachment.attachmentId),
 			])]);
 		} catch (reason) {
 			setError(errorMessage(reason));
@@ -561,10 +553,6 @@ function App() {
 	};
 
 	const useAttachment = (attachment: ConversationAttachment) => {
-		if (attachment.modelInput !== "image") {
-			void downloadAttachment(attachment);
-			return;
-		}
 		setSelectedAttachmentIds((current) => current.includes(attachment.attachmentId)
 			? current.filter((attachmentId) => attachmentId !== attachment.attachmentId)
 			: [...current, attachment.attachmentId].slice(-8));
@@ -670,13 +658,26 @@ function App() {
 	const requirementTerminal = requirement?.state.stageStatus === "passed" || requirement?.state.stageStatus === "cancelled";
 
 	useEffect(() => {
+		if (!active) return;
+		const controller = new AbortController();
+		let timer: ReturnType<typeof setTimeout>;
+		const connect = async () => {
+			try { await client.watchActivity(active.conversationId, (next) => { if (!controller.signal.aborted) setActivity((current) => current && next && current.updatedAt > next.updatedAt ? current : next); }, controller.signal); }
+			catch { /* Reconnect below; periodic status remains a fallback. */ }
+			if (!controller.signal.aborted) timer = setTimeout(() => void connect(), 1500);
+		};
+		void connect();
+		return () => { controller.abort(); clearTimeout(timer); };
+	}, [active?.conversationId]);
+
+	useEffect(() => {
 		setActivity(undefined); setRequirementActivity(undefined);
 		if (!active) return;
 		let cancelled = false;
 		const update = async () => {
 			try {
 				const [chat, task, freshHealth] = await Promise.all([client.activity(active.conversationId), requirementRunning ? client.activity(active.conversationId, true) : undefined, client.health()]);
-				if (!cancelled) { setActivity(chat); setRequirementActivity(task); setHealth(freshHealth); }
+				if (!cancelled) { setActivity((current) => current && chat && current.updatedAt > chat.updatedAt ? current : chat); setRequirementActivity(task); setHealth(freshHealth); }
 				if (!sending && chat && ["completed", "failed", "paused"].includes(chat.phase)) {
 					const restored = await client.get(active.conversationId);
 					if (!cancelled) setActive((current) => current?.conversationId === restored.conversationId && current.revision < restored.revision ? restored : current);
@@ -814,7 +815,7 @@ function App() {
 									<div className="avatar">Bx</div>
 									<div>
 										<span>{hasActiveBackgroundTask ? en ? "A background task is running; you can switch conversations." : "后台任务正在执行，可以切换会话" : progressLabel(activity)}</span>
-										<div className="thinking-dots"><i /><i /><i /></div>
+										{activity?.partialText && !hasActiveBackgroundTask ? <Markdown text={activity.partialText} language={language} /> : <div className="thinking-dots"><i /><i /><i /></div>}
 									</div>
 								</article>
 							)}
@@ -837,7 +838,7 @@ function App() {
 					{!realProvider && !loading && (
 						<div className="provider-warning">{en ? "The model service is not configured. Connect a local model to begin; saved conversations and requirement briefs remain available to review." : "模型服务尚未配置。配置本地模型连接后即可开始；已保存的会话和需求单仍可查看。"}</div>
 					)}
-					{error && <div className="error-banner" role="alert">{error}<button aria-label={en ? "Dismiss error" : "关闭错误提示"} onClick={() => setError(undefined)}>×</button></div>}
+					{error && <div className="error-banner" role="alert">{errorText(error, language)}<button aria-label={en ? "Dismiss error" : "关闭错误提示"} onClick={() => setError(undefined)}>×</button></div>}
 					{!replyRunning && !hasActiveBackgroundTask && active?.messages.at(-1)?.role === "user" && <button className="retry-action" disabled={!realProvider} onClick={() => void retryReply()}>{en ? "Continue the unfinished reply" : "继续上次未完成的回复"}</button>}
 					{hasActiveBackgroundTask && (
 						<div className="task-banner" role="status">
@@ -852,8 +853,7 @@ function App() {
 					{attachments.length > 0 && (
 						<div className="attachment-list" aria-label={en ? "Conversation attachments" : "会话附件"}>
 							{attachments.map((attachment) => (
-								<button
-									key={attachment.attachmentId}
+								<div className="attachment-item" key={attachment.attachmentId}><button
 									type="button"
 									className={selectedAttachmentIds.includes(attachment.attachmentId) ? "selected" : ""}
 									onClick={() => useAttachment(attachment)}
@@ -863,10 +863,8 @@ function App() {
 										? <img src={attachmentPreviews[attachment.attachmentId]} alt="" />
 										: <span>{attachment.kind === "text" ? "TXT" : "FILE"}</span>}
 									<strong>{attachment.name}</strong>
-									<small>{attachment.modelInput === "image"
-										? selectedAttachmentIds.includes(attachment.attachmentId) ? en ? "Will be sent with the next message" : "将随下一条消息发送" : en ? "Attach to the next message" : "点击附到下一条消息"
-										: parsedSources.some((source) => source.sha256 === attachment.sha256) ? inspectionStatusLabels[parsedSources.find((source) => source.sha256 === attachment.sha256)!.inspection.status] : en ? "Uploaded · parsed when creating a brief" : "已上传 · 生成需求单时解析"}</small>
-								</button>
+									<small>{selectedAttachmentIds.includes(attachment.attachmentId) ? en ? "Will be read with the next message" : "将随下一条消息读取" : en ? "Attach to the next message" : "点击附到下一条消息"}</small>
+								</button><button className="attachment-download" onClick={() => void downloadAttachment(attachment)} aria-label={`${en ? "Download" : "下载"} ${attachment.name}`}>{en ? "Download" : "下载"}</button></div>
 							))}
 						</div>
 					)}
@@ -892,7 +890,7 @@ function App() {
 								<input
 									type="file"
 									multiple
-									accept="image/*,.pdf,.txt,.md,.csv,.json"
+									accept="image/*,.pdf,.docx,.xlsx,.txt,.md,.csv,.json"
 									onChange={(event) => void uploadAttachments(event)}
 									disabled={!active || uploading}
 								/>
@@ -933,7 +931,7 @@ function App() {
 				<div className="proposal-body" role="tabpanel" id="panel-requirement" aria-labelledby="tab-requirement" hidden={panelTab !== "requirement"}>
 					{requirementMetrics && requirementMetrics.totals.runs > 0 && (
 						<details className="proposal-section diagnostics"><summary>{en ? "Run metrics" : "运行统计"}</summary>
-							<div className="section-title"><strong>Cross-run Metrics</strong><code>{requirementMetrics.totals.runs} Runs</code></div>
+							<div className="section-title"><strong>{en ? "Cross-run metrics" : "跨运行指标"}</strong><code>{requirementMetrics.totals.runs} {en ? "runs" : "次运行"}</code></div>
 							<dl className="run-metadata">
 								<div><dt>{en ? "Workflow completion" : "工作流完成"}</dt><dd>{requirementMetrics.rates.workflowCompletion === null ? "—" : `${Math.round(requirementMetrics.rates.workflowCompletion * 100)}%`}</dd></div>
 								<div><dt>{en ? "Stage pass" : "Stage 通过"}</dt><dd>{requirementMetrics.rates.stagePass === null ? "—" : `${Math.round(requirementMetrics.rates.stagePass * 100)}%`}</dd></div>
@@ -942,11 +940,11 @@ function App() {
 								<div><dt>{en ? "Average fact confirmation" : "平均 Fact 确认"}</dt><dd>{requirementMetrics.averages.confirmationRate === null ? "—" : `${Math.round(requirementMetrics.averages.confirmationRate * 100)}%`}</dd></div>
 								<div><dt>{en ? "Candidate accuracy" : "候选确认准确率"}</dt><dd>{requirementMetrics.averages.confirmedCandidateAccuracy === null ? "—" : `${Math.round(requirementMetrics.averages.confirmedCandidateAccuracy * 100)}%`}</dd></div>
 								<div><dt>{en ? "Source coverage" : "来源覆盖"}</dt><dd>{requirementMetrics.averages.sourceCoverageRate === null ? "—" : `${Math.round(requirementMetrics.averages.sourceCoverageRate * 100)}%`}</dd></div>
-								<div><dt>Artifact / 澄清问题</dt><dd>{requirementMetrics.totals.artifactVersions} / {requirementMetrics.totals.clarificationQuestions}</dd></div>
-								<div><dt>Queue 恢复 / 失败率</dt><dd>{requirementMetrics.queue.recoveryRate === null ? "—" : `${Math.round(requirementMetrics.queue.recoveryRate * 100)}%`} / {requirementMetrics.queue.failureRate === null ? "—" : `${Math.round(requirementMetrics.queue.failureRate * 100)}%`}</dd></div>
-								<div><dt>Tool 失败率</dt><dd>{requirementMetrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirementMetrics.runtime.toolFailureRate * 100)}%`}</dd></div>
-								<div><dt>总 Token (in / out)</dt><dd>{requirementMetrics.runtime.usage ? `${requirementMetrics.runtime.usage.inputTokens} / ${requirementMetrics.runtime.usage.outputTokens}` : "—"}</dd></div>
-								<div><dt>平均 Runtime 延迟</dt><dd>{requirementMetrics.averages.runtimeLatencyMs === null ? "—" : `${Math.round(requirementMetrics.averages.runtimeLatencyMs)} ms`}</dd></div>
+								<div><dt>{en ? "Artifacts / clarification questions" : "Artifact / 澄清问题"}</dt><dd>{requirementMetrics.totals.artifactVersions} / {requirementMetrics.totals.clarificationQuestions}</dd></div>
+								<div><dt>{en ? "Queue recovery / failure rate" : "Queue 恢复 / 失败率"}</dt><dd>{requirementMetrics.queue.recoveryRate === null ? "—" : `${Math.round(requirementMetrics.queue.recoveryRate * 100)}%`} / {requirementMetrics.queue.failureRate === null ? "—" : `${Math.round(requirementMetrics.queue.failureRate * 100)}%`}</dd></div>
+								<div><dt>{en ? "Tool failure rate" : "Tool 失败率"}</dt><dd>{requirementMetrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirementMetrics.runtime.toolFailureRate * 100)}%`}</dd></div>
+								<div><dt>{en ? "Total tokens (in / out)" : "总 Token (in / out)"}</dt><dd>{requirementMetrics.runtime.usage ? `${requirementMetrics.runtime.usage.inputTokens} / ${requirementMetrics.runtime.usage.outputTokens}` : "—"}</dd></div>
+								<div><dt>{en ? "Average runtime latency" : "平均 Runtime 延迟"}</dt><dd>{requirementMetrics.averages.runtimeLatencyMs === null ? "—" : `${Math.round(requirementMetrics.averages.runtimeLatencyMs)} ms`}</dd></div>
 							</dl>
 							<div className="verification-list">
 								<strong>{en ? "Recent run timeline" : "最近运行时间序列"}</strong>
@@ -994,20 +992,20 @@ function App() {
 							</section>
 
 							<details className="proposal-section diagnostics"><summary>{en ? "This run's details" : "本次运行详情"}</summary>
-								<div className="section-title"><strong>Product Metrics</strong><code>{requirement.metrics.schemaVersion}</code></div>
+								<div className="section-title"><strong>{en ? "Product metrics" : "产品指标"}</strong><code>{requirement.metrics.schemaVersion}</code></div>
 								<dl className="run-metadata">
-									<div><dt>Canonical 命中</dt><dd>{requirement.metrics.canonicalFactHitRate === null ? "—" : `${Math.round(requirement.metrics.canonicalFactHitRate * 100)}%`}</dd></div>
-									<div><dt>Fact 确认</dt><dd>{Math.round(requirement.metrics.confirmationRate * 100)}% ({requirement.metrics.confirmedRequiredFacts}/{requirement.metrics.requiredFacts})</dd></div>
-									<div><dt>候选确认准确率</dt><dd>{requirement.metrics.confirmedCandidateAccuracy === null ? "—" : `${Math.round(requirement.metrics.confirmedCandidateAccuracy * 100)}%`}</dd></div>
-									<div><dt>来源覆盖</dt><dd>{requirement.metrics.sourceCoverageRate === null ? "—" : `${Math.round(requirement.metrics.sourceCoverageRate * 100)}%`}</dd></div>
-									<div><dt>缺失 Fact</dt><dd>{requirement.metrics.missingRequiredFacts.length}</dd></div>
-									<div><dt>澄清轮次</dt><dd>{requirement.metrics.clarificationRounds}</dd></div>
+									<div><dt>{en ? "Canonical match rate" : "Canonical 命中"}</dt><dd>{requirement.metrics.canonicalFactHitRate === null ? "—" : `${Math.round(requirement.metrics.canonicalFactHitRate * 100)}%`}</dd></div>
+									<div><dt>{en ? "Fact confirmation" : "Fact 确认"}</dt><dd>{Math.round(requirement.metrics.confirmationRate * 100)}% ({requirement.metrics.confirmedRequiredFacts}/{requirement.metrics.requiredFacts})</dd></div>
+									<div><dt>{en ? "Confirmed candidate accuracy" : "候选确认准确率"}</dt><dd>{requirement.metrics.confirmedCandidateAccuracy === null ? "—" : `${Math.round(requirement.metrics.confirmedCandidateAccuracy * 100)}%`}</dd></div>
+									<div><dt>{en ? "Source coverage" : "来源覆盖"}</dt><dd>{requirement.metrics.sourceCoverageRate === null ? "—" : `${Math.round(requirement.metrics.sourceCoverageRate * 100)}%`}</dd></div>
+									<div><dt>{en ? "Missing facts" : "缺失 Fact"}</dt><dd>{requirement.metrics.missingRequiredFacts.length}</dd></div>
+									<div><dt>{en ? "Clarification rounds" : "澄清轮次"}</dt><dd>{requirement.metrics.clarificationRounds}</dd></div>
 									<div><dt>Token (in / out)</dt><dd>{requirement.metrics.runtime.usage ? `${requirement.metrics.runtime.usage.inputTokens} / ${requirement.metrics.runtime.usage.outputTokens}` : "—"}</dd></div>
-									<div><dt>Runtime 延迟</dt><dd>{requirement.metrics.runtime.latencyMs === null ? "—" : `${requirement.metrics.runtime.latencyMs} ms`}</dd></div>
+									<div><dt>{en ? "Runtime latency" : "Runtime 延迟"}</dt><dd>{requirement.metrics.runtime.latencyMs === null ? "—" : `${requirement.metrics.runtime.latencyMs} ms`}</dd></div>
 									<div><dt>{en ? "Cost" : "成本"}</dt><dd>{requirement.metrics.runtime.costStatus === "unconfigured" ? en ? "Pricing not configured" : "未配置价格" : `$${requirement.metrics.runtime.costUsd}`}</dd></div>
-									<div><dt>澄清问题</dt><dd>{requirement.metrics.clarificationQuestions}</dd></div>
-									<div><dt>恢复 / 失败</dt><dd>{requirement.metrics.queue.recoveryCount} / {requirement.metrics.queue.totalFailureCount}</dd></div>
-									<div><dt>Tool 失败率</dt><dd>{requirement.metrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirement.metrics.runtime.toolFailureRate * 100)}%`}</dd></div>
+									<div><dt>{en ? "Clarification questions" : "澄清问题"}</dt><dd>{requirement.metrics.clarificationQuestions}</dd></div>
+									<div><dt>{en ? "Recoveries / failures" : "恢复 / 失败"}</dt><dd>{requirement.metrics.queue.recoveryCount} / {requirement.metrics.queue.totalFailureCount}</dd></div>
+									<div><dt>{en ? "Tool failure rate" : "Tool 失败率"}</dt><dd>{requirement.metrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirement.metrics.runtime.toolFailureRate * 100)}%`}</dd></div>
 								</dl>
 							</details>
 
@@ -1051,7 +1049,7 @@ function App() {
 									<div className="section-title"><strong>{en ? "Requirement validation" : "需求校验"}</strong><span>{evaluation.passed ? en ? "Passed" : "通过" : en ? "Failed" : "未通过"}</span></div>
 									{evaluation.issues.length === 0
 										? <p>{en ? `Structure and authoritative-state checks passed. ${evaluation.approvalEligible ? "Ready for approval." : "More information or confirmation is still needed."}` : `结构和权威状态检查通过。${evaluation.approvalEligible ? "可以审批。" : "仍需补充或确认 信息。"}`}</p>
-										: evaluation.issues.map((issue) => <p key={issue.code}>{issue.message}</p>)}
+										: evaluation.issues.map((issue) => <p key={issue.code}>{validationText(issue, language)}</p>)}
 								</section>
 							)}
 
@@ -1067,10 +1065,10 @@ function App() {
 							)}
 
 							{requirement.state.approval && requirement.state.approval.status !== "requested" && (
-								<div className={`approval-result ${requirement.state.approval.status}`}>{en ? "Requirement brief confirmation: " : "需求单确认："}{requirement.state.approval.status}</div>
+								<div className={`approval-result ${requirement.state.approval.status}`}>{en ? "Requirement brief confirmation: " : "需求单确认："}{statusFor(language, requirement.state.approval.status, ({ approved: "已批准", rejected: "已拒绝", superseded: "已失效", cancelled: "已取消" } as Record<string, string>)[requirement.state.approval.status] ?? requirement.state.approval.status)}</div>
 							)}
 							{requirement.job?.status === "dead_letter" && (
-								<div className="proposal-failure">{requirement.job.lastFailure?.message ?? "Requirement Worker 已进入死信队列"}</div>
+								<div className="proposal-failure">{errorText(requirement.job.lastFailure, language)}</div>
 							)}
 
 							{requirement.state.stageStatus !== "passed" && requirement.state.stageStatus !== "cancelled" && (

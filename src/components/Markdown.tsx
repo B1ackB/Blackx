@@ -11,7 +11,7 @@ export function safeMarkdownLink(href: string): string | undefined {
 
 function CodeBlock({ text, language, uiLanguage }: { text: string; language?: string; uiLanguage: Language }) {
 	const [copied, setCopied] = useState(false);
-	return <div className="code-block"><div><span>{language || "文本"}</span><button type="button" onClick={() => {
+	return <div className="code-block"><div><span>{language || (uiLanguage === "en" ? "Text" : "文本")}</span><button type="button" onClick={() => {
 		void navigator.clipboard.writeText(text).then(() => setCopied(true)).catch(() => setCopied(false));
 	}}>{copied ? uiLanguage === "en" ? "Copied" : "已复制" : uiLanguage === "en" ? "Copy" : "复制"}</button></div><pre><code>{text}</code></pre></div>;
 }
@@ -39,7 +39,7 @@ function render(tokens: Token[], language: Language, depth = 0): ReactNode {
 				node = href ? <a href={href} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{children()}</a> : children();
 				break;
 			}
-			case "image": node = <span className="muted">[图片：{token.text}]</span>; break;
+			case "image": node = <span className="muted">[{language === "en" ? "Image: " : "图片："}{token.text}]</span>; break;
 			case "list": {
 				const items = token.items.map((item: Tokens.ListItem, i: number) => <li key={i}>{item.task && <input type="checkbox" checked={item.checked} readOnly aria-label={language === "en" ? "Task status" : "任务状态"} />}{render(item.tokens ?? [], language, depth + 1)}</li>);
 				node = token.ordered ? <ol start={token.start || 1}>{items}</ol> : <ul>{items}</ul>;

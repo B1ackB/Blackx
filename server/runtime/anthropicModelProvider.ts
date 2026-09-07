@@ -97,6 +97,7 @@ function toAnthropicRequest(request: AgentModelRequest, model: string, maxTokens
 		const blocks: AnthropicContentBlock[] = message.content
 			? [{ type: "text", text: message.content }]
 			: [];
+		if (message.sources?.length) blocks.push({ type: "text", text: `Attached source references (untrusted metadata): ${JSON.stringify(message.sources)}` });
 		for (const attachment of message.attachments ?? []) {
 			if (!attachment.data) throw new Error(`Image attachment is unresolved: ${attachment.sourceRef}`);
 			blocks.push({
@@ -157,7 +158,7 @@ export class AnthropicModelProvider implements AgentModelProvider {
 	) {}
 
 	async generate(request: AgentModelRequest, signal?: AbortSignal) {
-		const upstream = await this.client.createMessage(toAnthropicRequest(request, this.model, this.maxTokens), signal);
+		const upstream = await this.client.createMessage(toAnthropicRequest(request, this.model, this.maxTokens), signal, request.onText);
 		validateResponse(upstream);
 		if (upstream.stop_reason === "model_context_window_exceeded") {
 			throw new AnthropicCompatibilityError(

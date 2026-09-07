@@ -1,7 +1,7 @@
 export interface AssetInspection {
 	schemaVersion: "asset-inspection.v1";
 	bytes: number;
-	kind: "pdf" | "image" | "text" | "file";
+	kind: "pdf" | "image" | "text" | "file" | "word" | "spreadsheet";
 	status: "parsed" | "needs_ocr" | "metadata_only" | "unsupported";
 	pages: Array<{ page: number; text: string }>;
 	truncated: boolean;
@@ -16,14 +16,14 @@ export interface AssetInspectionRecord {
 	sha256: string;
 	sourceRef: string;
 	inspection: AssetInspection;
-	parserVersion: "1.0.0";
+	parserVersion: "1.0.0" | "1.1.0";
 }
 
 export function isAssetInspection(value: unknown): value is AssetInspection {
 	if (!value || typeof value !== "object") return false;
 	const data = value as AssetInspection;
 	return data.schemaVersion === "asset-inspection.v1" && Number.isSafeInteger(data.bytes) && data.bytes > 0 && data.bytes <= 10 * 1024 * 1024 &&
-		["pdf", "image", "text", "file"].includes(data.kind) && ["parsed", "needs_ocr", "metadata_only", "unsupported"].includes(data.status) &&
+		["pdf", "image", "text", "file", "word", "spreadsheet"].includes(data.kind) && ["parsed", "needs_ocr", "metadata_only", "unsupported"].includes(data.status) &&
 		typeof data.truncated === "boolean" && Array.isArray(data.pages) && data.pages.length <= 100 &&
 		data.pages.every((page, index) => page && page.page === index + 1 && typeof page.text === "string") &&
 		data.pages.reduce((count, page) => count + page.text.length, 0) <= 48_000 &&

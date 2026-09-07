@@ -6,6 +6,7 @@ export interface RuntimeActivity {
 	phase: "starting" | "model" | "tool" | "completed" | "paused" | "failed";
 	updatedAt: string;
 	iteration?: number;
+	partialText?: string;
 	tool?: string;
 }
 

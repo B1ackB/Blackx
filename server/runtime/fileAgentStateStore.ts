@@ -78,6 +78,7 @@ function messages(value: unknown): value is AgentMessage[] {
 		if (message.durable !== undefined && typeof message.durable !== "boolean") return false;
 		if (message.toolCallId !== undefined && typeof message.toolCallId !== "string") return false;
 		if (!imageAttachments(message.attachments)) return false;
+		if (message.sources !== undefined && (!Array.isArray(message.sources) || message.sources.length > 8 || !message.sources.every((source) => record(source) && typeof source.name === "string" && source.name.length <= 200 && typeof source.mediaType === "string" && source.mediaType.length <= 200 && typeof source.sourceRef === "string" && /^attachment:\/\/[^/]+\/attachment-[a-f0-9]+$/.test(source.sourceRef) && /^[a-f0-9]{64}$/.test(String(source.sha256))))) return false;
 		return message.toolCalls === undefined || (
 			Array.isArray(message.toolCalls) && message.toolCalls.every((call) => (
 				record(call) && typeof call.id === "string" && typeof call.name === "string" && "input" in call

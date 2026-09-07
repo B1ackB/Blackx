@@ -37,7 +37,7 @@ export interface AnthropicMessageRequest {
   output_config?: {
     format: { type: "json_schema"; schema: JsonObject };
   };
-  stream: false;
+  stream: boolean;
 }
 
 export interface AnthropicMessageResponse {

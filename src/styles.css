@@ -474,3 +474,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .explorer-preview pre { font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 440px; overflow: auto; tab-size: 4; }
 .explorer-preview .section-title { gap: 8px; flex-wrap: wrap; }
 .recent-files { margin-top: 14px; font-size: 12px; }
+
+.attachment-item { flex: 0 0 185px; min-width: 0; }
+.attachment-item > button { width: 100%; }
+.attachment-item > .attachment-download { display: block; min-height: 22px; padding: 2px 6px; border: 0; background: transparent; font-size: 10px; text-align: right; }
+.thinking .markdown { color: var(--ink); opacity: 1; }

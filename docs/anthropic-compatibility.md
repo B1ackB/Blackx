@@ -31,7 +31,7 @@ Compact Summarizer 是无 Tool 的辅助调用，显式请求 provider-neutral `
 | Usage / Cache / Thinking | online-supported | 映射 input、output、cache read 与 thinking token；带签名的 thinking block 原样跨 Tool Loop 回传 |
 | Token Count | online-supported | 使用 `POST /v1/messages/count_tokens`；DeepSeek 真实 Contract 已通过 |
 | stop reason | offline-supported | context window、max tokens、refusal 和 pause turn 均映射为结构化 Runtime Failure |
-| 流式输出 | unsupported | 当前只发送 `stream: false` |
+| 流式输出 | supported（本地协议回归） | Agent 请求 SSE；逐步显示 text delta，重组 thinking/signature/tool input，完整 message_stop 后提交；JSON 兼容响应按整段展示。真实厂商当前端点仍需独立 Online Gate，见 ADR-0014。 |
 | PNG / JPEG / WebP / GIF 图片输入 | offline-supported | `AgentMessage` 图片引用在调用前从租户附件 Store 重水化，并映射为 Anthropic `image/base64`；Base64 不进入 Session、ContextSnapshot 或 Trace；尚未经过 DeepSeek 在线图片 Gate |
 | PDF、其他文件、音频 | unsupported | 文件可持久化和追溯，但尚无文档解析、OCR 或音频内容块 Adapter |
 | 内建 Web/Search/Computer Tool | unsupported | 首个切片只接受注册的强类型 Tool |

@@ -87,6 +87,7 @@ export class ConversationFileService implements AgentToolApprovalPort {
 		this.load(scope);
 		return path ? this.local.list(path) : { locations: this.local.locations(), files: this.list(scope).files };
 	}
+	readDocument(scope: Scope, path: string) { this.load(scope); return this.local.readDocument(path); }
 	readLocal(scope: Scope, path: string) {
 		this.load(scope);
 		const { absolutePath, content, sha256, size } = this.local.read(path);

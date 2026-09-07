@@ -70,6 +70,22 @@ export class LocalFileAccess {
 			return { absolutePath: path, content, sha256: fileHash(content), size: data.length, mode: stat.mode & 0o777, identity: `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}` };
 		} finally { closeSync(fd); }
 	}
+	readDocument(path: string): { absolutePath: string; content: Buffer; sha256: string } {
+		this.check(path);
+		const limit = 10 * 1024 * 1024;
+		const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		try {
+			const stat = fstatSync(fd);
+			if (!stat.isFile() || stat.nlink !== 1) deny("只能读取普通文件");
+			if (!stat.size || stat.size > limit) throw new TaskFileError("file_too_large", "文档须为 1 字节至 10 MiB", 413);
+			const bytes = Buffer.alloc(Math.min(stat.size + 1, limit + 1));
+			let size = 0;
+			while (size < bytes.length) { const count = readSync(fd, bytes, size, bytes.length - size, null); if (!count) break; size += count; }
+			if (size !== stat.size) throw new TaskFileError("file_version_conflict", "读取期间文件已变化", 409);
+			const content = bytes.subarray(0, size);
+			return { absolutePath: path, content, sha256: createHash("sha256").update(content).digest("hex") };
+		} finally { closeSync(fd); }
+	}
 	inspect(path: string) {
 		this.check(path);
 		try { return this.read(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
