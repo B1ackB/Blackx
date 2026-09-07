@@ -383,10 +383,11 @@ server.on("request", async (request, response) => {
   }
 
 	if (url.pathname === "/api/conversations") {
+		const language = url.searchParams.get("language") === "en" ? "en" : "zh";
 		const result = request.method === "GET"
-			? conversationApi.list(conversationApiContext(request))
+			? conversationApi.list(conversationApiContext(request), language)
 			: request.method === "POST"
-				? conversationApi.create(conversationApiContext(request))
+				? conversationApi.create(conversationApiContext(request), (await readJson(request) as { language?: unknown }).language === "en" ? "en" : "zh")
 				: undefined;
 		if (result) {
 			json(response, result.status, result.body);
@@ -870,7 +871,7 @@ server.on("request", async (request, response) => {
 		}
 		const result = request.method === "DELETE"
 			? conversationApi.delete(conversationApiContext(request), conversationId, (session) => conversationDeletion.cleanup(session))
-			: conversationApi.get(conversationApiContext(request), conversationId);
+			: conversationApi.get(conversationApiContext(request), conversationId, url.searchParams.get("language") === "en" ? "en" : "zh");
 		json(response, result.status, result.body);
 		return;
 	}

@@ -6,6 +6,7 @@ import { ConversationFiles } from "./components/ConversationFiles";
 import { DeleteConversationDialog } from "./components/DeleteConversationDialog";
 import { DeliveryPreview } from "./components/DeliveryPreview";
 import { requirementFieldLabels, factStatusLabels, inspectionStatusLabels } from "./manufacturing/requirementDelivery";
+import { languageNames, labelFor, statusFor, type Language } from "./i18n";
 import type { AssetInspectionRecord } from "./runtime/assetInspection";
 import { requiredRequirementFacts } from "./manufacturing/requirementBrief";
 import type { RuntimeActivity } from "./runtime/conversationContracts";
@@ -43,12 +44,12 @@ function summary(conversation: ConversationView): ConversationSummary {
 	};
 }
 
-async function bootstrap() {
+async function bootstrap(language: Language) {
 	if (!bootstrapPromise) {
 		bootstrapPromise = (async () => {
-			const [health, existing] = await Promise.all([client.health(), client.list()]);
+			const [health, existing] = await Promise.all([client.health(), client.list(language)]);
 			const active = existing[0]
-				? await client.get(existing[0].conversationId)
+				? await client.get(existing[0].conversationId, language)
 				: undefined;
 			return {
 				health,
@@ -60,8 +61,8 @@ async function bootstrap() {
 	return bootstrapPromise;
 }
 
-function displayTime(value: string): string {
-	return new Intl.DateTimeFormat("zh-CN", {
+function displayTime(value: string, language: Language): string {
+	return new Intl.DateTimeFormat(language === "en" ? "en-US" : "zh-CN", {
 		hour: "2-digit",
 		minute: "2-digit",
 	}).format(new Date(value));
@@ -72,13 +73,15 @@ function attachmentIdFromSourceRef(sourceRef: string): string | undefined {
 }
 
 function errorMessage(error: unknown): string {
+	const en = document.documentElement.lang === "en";
 	if (error instanceof ConversationClientError) {
 		if (error.code === "real_provider_required") {
-			return "当前服务不是实际模型模式。请使用 BLACKX_RUNTIME_MODE=anthropic 启动。";
+			return en ? "The service is not using a live model. Start it with BLACKX_RUNTIME_MODE=anthropic." : "当前服务不是实际模型模式。请使用 BLACKX_RUNTIME_MODE=anthropic 启动。";
 		}
+		if (error.code === "runtime_unavailable") return en ? "Unable to connect to the Blackx server." : "无法连接 Blackx 服务端";
 		return error.message;
 	}
-	return "请求失败，请检查服务端日志后重试。";
+	return en ? "Request failed. Check the server log and try again." : "请求失败，请检查服务端日志后重试。";
 }
 
 function requirementContent(value: unknown): RequirementBriefV1 | undefined {
@@ -115,7 +118,20 @@ const stageLabels = {
 	retryable_failed: "评测未通过",
 } as const;
 
+const stageLabelsEn: Record<keyof typeof stageLabels, string> = {
+	pending: "Not started",
+	running: "Generating",
+	evaluating: "Evaluating",
+	needs_input: "Input needed",
+	waiting_approval: "Awaiting approval",
+	revision_required: "Revision needed",
+	cancelled: "Cancelled",
+	passed: "Passed",
+	retryable_failed: "Evaluation failed",
+};
+
 function App() {
+	const [language, setLanguage] = useState<Language>(() => localStorage.getItem("blackx-language") === "en" ? "en" : "zh");
 	const [panelTab, setPanelTab] = useState<"requirement" | "models" | "files">("requirement");
 	const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 760);
 	const [reviewOpen, setReviewOpen] = useState(() => window.innerWidth >= 1180);
@@ -157,10 +173,23 @@ function App() {
 	const chatScrollRef = useRef<HTMLElement>(null);
 	const followChatRef = useRef(true);
 	const newConversationRef = useRef<HTMLButtonElement>(null);
+	const en = language === "en";
+	const stageLabel = (status: keyof typeof stageLabels) => en ? stageLabelsEn[status] : stageLabels[status];
+	const defaultConversationTitle = en ? "New conversation" : "新会话";
+	const defaultConversationPreview = en ? "No messages yet" : "尚未发送消息";
+	const displayConversationTitle = (title: string) => title === "新会话" || title === "New conversation" ? defaultConversationTitle : title;
+	const displayConversationPreview = (preview: string) => preview === "尚未发送消息" || preview === "No messages yet" ? defaultConversationPreview : preview;
+	const fieldLabel = (key: string) => labelFor(language, key, requirementFieldLabels[key] ?? key);
+	const factStatus = (status: string) => statusFor(language, status, factStatusLabels[status] ?? status);
+
+	useEffect(() => {
+		localStorage.setItem("blackx-language", language);
+		document.documentElement.lang = language === "en" ? "en" : "zh-CN";
+	}, [language]);
 
 	useEffect(() => {
 		let cancelled = false;
-		void bootstrap()
+		void bootstrap(language)
 			.then((result) => {
 				if (cancelled) return;
 				setHealth(result.health);
@@ -352,7 +381,7 @@ function App() {
 	}, [active?.conversationId, active?.messages.length, sending]);
 
 	const refreshList = async (_current: ConversationView) => {
-		const next = await client.list();
+		const next = await client.list(language);
 		setConversations(next.filter((item) => !deletedIds.current.has(item.conversationId)));
 	};
 
@@ -361,7 +390,7 @@ function App() {
 		const version = ++selectionVersion.current;
 		setError(undefined);
 		try {
-			const created = await client.create();
+			const created = await client.create(language);
 			if (version !== selectionVersion.current) return;
 			followChatRef.current = true;
 			activate(created);
@@ -381,7 +410,7 @@ function App() {
 		const version = ++selectionVersion.current;
 		try {
 			followChatRef.current = true;
-			const selected = await client.get(conversationId);
+			const selected = await client.get(conversationId, language);
 			if (version !== selectionVersion.current || deletedIds.current.has(conversationId)) return;
 			activate(selected);
 			setDraft("");
@@ -680,29 +709,29 @@ function App() {
 		try { await client.stop(active.conversationId); }
 		catch (reason) { setError(errorMessage(reason)); }
 	};
-	const progressLabel = (value?: RuntimeActivity) => value?.phase === "tool" ? `正在${value.tool === "asset_metadata_inspect" ? "解析附件" : value.tool === "project_source_read" ? "读取需求来源" : "执行工具"}${value.tool ? ` · ${value.tool}` : ""}` : value?.phase === "model" ? `正在分析${value.iteration ? ` · 第 ${value.iteration} 轮` : ""}` : "正在准备任务";
+	const progressLabel = (value?: RuntimeActivity) => value?.phase === "tool" ? `${en ? "Running" : "正在"}${value.tool === "asset_metadata_inspect" ? en ? " attachment analysis" : "解析附件" : value.tool === "project_source_read" ? en ? " requirement source read" : "读取需求来源" : en ? " tool" : "执行工具"}${value.tool ? ` · ${value.tool}` : ""}` : value?.phase === "model" ? `${en ? "Analysing" : "正在分析"}${value.iteration ? en ? ` · pass ${value.iteration}` : ` · 第 ${value.iteration} 轮` : ""}` : en ? "Preparing task" : "正在准备任务";
 	const replyRunning = sending || Boolean(activity && ["starting", "model", "tool"].includes(activity.phase));
 	const fieldOptions = requiredRequirementFacts.print;
 
 	return (
 		<div className={`app-shell ${sidebarOpen ? "sidebar-open" : ""} ${reviewOpen ? "review-open" : ""}`}>
-			<button className="drawer-backdrop" aria-label="关闭侧栏" onClick={() => { setReviewOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); }} />
+			<button className="drawer-backdrop" aria-label={en ? "Close sidebar" : "关闭侧栏"} onClick={() => { setReviewOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); }} />
 			<aside className="sidebar">
 				<div className="brand-lockup">
 					<span className="brand-mark" aria-hidden="true">Bx</span>
 					<div>
 						<strong>Blackx</strong>
-						<span>Packaging Workspace</span>
+						<span>{en ? "Packaging Workspace" : "包装工作台"}</span>
 					</div>
 				</div>
 
 				<button ref={newConversationRef} className="new-task" onClick={() => void createConversation()} disabled={sending || deleting || loading}>
-					<span>＋</span> 新建会话
+					<span>＋</span> {en ? "New conversation" : "新建会话"}
 				</button>
 
-				<div className="history-label">会话历史</div>
-				<nav className="conversation-list" aria-label="会话历史">
-					{!loading && conversations.length === 0 && <p className="history-empty">暂无会话，新建一个开始吧。</p>}
+				<div className="history-label">{en ? "Conversation history" : "会话历史"}</div>
+				<nav className="conversation-list" aria-label={en ? "Conversation history" : "会话历史"}>
+					{!loading && conversations.length === 0 && <p className="history-empty">{en ? "No conversations yet. Start a new one." : "暂无会话，新建一个开始吧。"}</p>}
 					{conversations.map((conversation) => (
 						<div className="conversation-item" key={conversation.conversationId}>
 						<button
@@ -710,11 +739,11 @@ function App() {
 							onClick={() => void selectConversation(conversation.conversationId)}
 							disabled={sending || deleting}
 						>
-							<strong>{conversation.title}</strong>
-							<span>{conversation.preview}</span>
-							<small>{displayTime(conversation.updatedAt)} · {conversation.messageCount} 条</small>
+							<strong>{displayConversationTitle(conversation.title)}</strong>
+							<span>{displayConversationPreview(conversation.preview)}</span>
+							<small>{displayTime(conversation.updatedAt, language)} · {conversation.messageCount} {en ? "messages" : "条"}</small>
 						</button>
-						<button className="delete-conversation" aria-label={`删除会话：${conversation.title}`} title="删除会话"
+						<button className="delete-conversation" aria-label={`${en ? "Delete conversation" : "删除会话"}：${displayConversationTitle(conversation.title)}`} title={en ? "Delete conversation" : "删除会话"}
 							disabled={deleting || uploading || requirementBusy}
 							onClick={() => { setDeleteError(undefined); setPendingDelete(conversation); }}>
 							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>
@@ -726,20 +755,21 @@ function App() {
 				<div className="sidebar-footer">
 					<div className="runtime-light">
 						<i className={realProvider ? "online" : "offline"} />
-						{!realProvider ? "模型尚未配置" : health?.providerStatus === "last_request_succeeded" ? "最近请求成功" : health?.providerStatus === "last_request_failed" ? "最近请求失败" : "模型已配置 · 待验证"}
+						{!realProvider ? en ? "Model not configured" : "模型尚未配置" : health?.providerStatus === "last_request_succeeded" ? en ? "Last request succeeded" : "最近请求成功" : health?.providerStatus === "last_request_failed" ? en ? "Last request failed" : "最近请求失败" : en ? "Model configured · pending verification" : "模型已配置 · 待验证"}
 					</div>
-					<details className="permission-summary"><summary>本地访问与工具权限</summary><p>会话身份由本机服务绑定。可读取本机真实文件；Agent 会在新建、修改或删除前展示具体路径和内容，等你单次批准后执行，并保留备份。附件解析禁止联网，事实仍需人工确认。</p></details>
+					<label className="language-selector">{en ? "Language" : "语言"}<select value={language} onChange={(event) => setLanguage(event.target.value as Language)} aria-label={en ? "Language" : "语言"}>{Object.entries(languageNames).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
+					<details className="permission-summary"><summary>{en ? "Local access and tool permissions" : "本地访问与工具权限"}</summary><p>{en ? "This device binds the conversation identity. The Agent can read local files; before creating, changing, or deleting one, it shows the exact path and content for your one-time approval and retains a backup. Attachment inspection never uses the network, and facts still require human confirmation." : "会话身份由本机服务绑定。可读取本机真实文件；Agent 会在新建、修改或删除前展示具体路径和内容，等你单次批准后执行，并保留备份。附件解析禁止联网，事实仍需人工确认。"}</p></details>
 				</div>
 			</aside>
 
 			<main className="conversation">
 				<header className="topbar">
-					<button className="panel-toggle" aria-label="切换会话侧栏" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
+					<button className="panel-toggle" aria-label={en ? "Toggle conversation sidebar" : "切换会话侧栏"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
 					<div>
 						<span className="eyebrow">BLACKX WORKSPACE</span>
-						<h1>{active?.title ?? "Blackx 会话"}</h1>
+						<h1>{active ? displayConversationTitle(active.title) : (en ? "Blackx conversation" : "Blackx 会话")}</h1>
 					</div>
-					<button className="panel-toggle review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen(!reviewOpen)}>工作区 · {{ requirement: "需求单", models: "模型", files: "文件" }[panelTab]}</button>
+					<button className="panel-toggle review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen(!reviewOpen)}>{en ? "Workspace" : "工作区"} · {{ requirement: en ? "Requirements" : "需求单", models: en ? "Models" : "模型", files: en ? "Files" : "文件" }[panelTab]}</button>
 				</header>
 
 				<section
@@ -752,18 +782,18 @@ function App() {
 					}}
 				>
 					{loading ? (
-						<div className="empty-state"><p>正在加载服务端会话…</p></div>
+						<div className="empty-state"><p>{en ? "Loading conversations…" : "正在加载服务端会话…"}</p></div>
 					) : active?.messages.length ? (
 						<div className="message-list">
 							{active.messages.map((message) => (
 								<article key={message.messageId} className={`message ${message.role}`}>
-									<div className="avatar">{message.role === "assistant" ? "Bx" : "你"}</div>
+									<div className="avatar">{message.role === "assistant" ? "Bx" : en ? "You" : "你"}</div>
 									<div className="message-content">
 										<div className="message-meta">
-											<strong>{message.role === "assistant" ? "Blackx" : "你"}</strong>
-											<time>{displayTime(message.createdAt)}</time>
+											<strong>{message.role === "assistant" ? "Blackx" : en ? "You" : "你"}</strong>
+											<time>{displayTime(message.createdAt, language)}</time>
 										</div>
-										<Markdown text={message.content} />
+										<Markdown text={message.content} language={language} />
 										{message.attachments?.length ? (
 											<div className="message-attachments">
 												{message.attachments.map((attachment) => {
@@ -783,7 +813,7 @@ function App() {
 								<article className="message assistant thinking">
 									<div className="avatar">Bx</div>
 									<div>
-										<span>{hasActiveBackgroundTask ? "后台任务正在执行，可以切换会话" : progressLabel(activity)}</span>
+										<span>{hasActiveBackgroundTask ? en ? "A background task is running; you can switch conversations." : "后台任务正在执行，可以切换会话" : progressLabel(activity)}</span>
 										<div className="thinking-dots"><i /><i /><i /></div>
 									</div>
 								</article>
@@ -792,37 +822,35 @@ function App() {
 					) : (
 						<div className="empty-state">
 							<span className="empty-mark">Bx</span>
-							<h2>开始一个新的包装需求任务</h2>
-							<p>上传资料，描述你要交付什么。Blackx 会整理需求、标出缺失信息，生成可核对与导出的需求单。</p>
-							{!active ? <button className="secondary-action" onClick={() => void createConversation()} disabled={deleting}>开始新会话</button> : <div className="prompt-grid">
-								<button onClick={() => setDraft("我想做一款500克咖啡豆包装袋，请先帮我梳理需要确认的信息。")}>咖啡豆包装需求</button>
-								<button onClick={() => setDraft("我想定制一批护肤品包装纸盒，请先帮我梳理盒型、尺寸、数量和交付信息。")}>护肤品纸盒需求</button>
+							<h2>{en ? "Start a new packaging request" : "开始一个新的包装需求任务"}</h2>
+							<p>{en ? "Upload reference material and describe what you need delivered. Blackx organises the request, flags missing information, and creates a requirement brief you can review and export." : "上传资料，描述你要交付什么。Blackx 会整理需求、标出缺失信息，生成可核对与导出的需求单。"}</p>
+							{!active ? <button className="secondary-action" onClick={() => void createConversation()} disabled={deleting}>{en ? "Start a conversation" : "开始新会话"}</button> : <div className="prompt-grid">
+								<button onClick={() => setDraft(en ? "I need a 500 g coffee bean packaging bag. Please help me identify the information that needs confirmation first." : "我想做一款500克咖啡豆包装袋，请先帮我梳理需要确认的信息。")}>{en ? "Coffee packaging request" : "咖啡豆包装需求"}</button>
+								<button onClick={() => setDraft(en ? "I need custom folding cartons for skincare products. Please help me confirm the carton type, dimensions, quantity, and delivery details." : "我想定制一批护肤品包装纸盒，请先帮我梳理盒型、尺寸、数量和交付信息。")}>{en ? "Skincare carton request" : "护肤品纸盒需求"}</button>
 							</div>}
 						</div>
 					)}
 				</section>
 
 				<div className="composer-wrap">
-					{active && <ConversationFiles key={active.conversationId} conversationId={active.conversationId} />}
+					{active && <ConversationFiles key={active.conversationId} conversationId={active.conversationId} language={language} />}
 					{!realProvider && !loading && (
-						<div className="provider-warning">
-							模型服务尚未配置。配置本地模型连接后即可开始；已保存的会话和需求单仍可查看。
-						</div>
+						<div className="provider-warning">{en ? "The model service is not configured. Connect a local model to begin; saved conversations and requirement briefs remain available to review." : "模型服务尚未配置。配置本地模型连接后即可开始；已保存的会话和需求单仍可查看。"}</div>
 					)}
-					{error && <div className="error-banner" role="alert">{error}<button aria-label="关闭错误提示" onClick={() => setError(undefined)}>×</button></div>}
-					{!replyRunning && !hasActiveBackgroundTask && active?.messages.at(-1)?.role === "user" && <button className="retry-action" disabled={!realProvider} onClick={() => void retryReply()}>继续上次未完成的回复</button>}
+					{error && <div className="error-banner" role="alert">{error}<button aria-label={en ? "Dismiss error" : "关闭错误提示"} onClick={() => setError(undefined)}>×</button></div>}
+					{!replyRunning && !hasActiveBackgroundTask && active?.messages.at(-1)?.role === "user" && <button className="retry-action" disabled={!realProvider} onClick={() => void retryReply()}>{en ? "Continue the unfinished reply" : "继续上次未完成的回复"}</button>}
 					{hasActiveBackgroundTask && (
 						<div className="task-banner" role="status">
-							后台任务：{activeBackgroundTasks.some((task) => task.status === "leased") ? "模型处理中" : "排队或等待重试"}
+							{en ? "Background task: " : "后台任务："}{activeBackgroundTasks.some((task) => task.status === "leased") ? en ? "Model processing" : "模型处理中" : en ? "Queued or waiting to retry" : "排队或等待重试"}
 						</div>
 					)}
 					{activeCronSchedules.length > 0 && (
 						<div className="cron-banner" role="status">
-							Agent 管理的定时任务：{activeCronSchedules.length} 个 · 下次运行 {displayTime(activeCronSchedules[0].nextRunAt)}
+							{en ? "Agent-managed schedules: " : "Agent 管理的定时任务："}{activeCronSchedules.length} {en ? "· next run " : "个 · 下次运行 "}{displayTime(activeCronSchedules[0].nextRunAt, language)}
 						</div>
 					)}
 					{attachments.length > 0 && (
-						<div className="attachment-list" aria-label="会话附件">
+						<div className="attachment-list" aria-label={en ? "Conversation attachments" : "会话附件"}>
 							{attachments.map((attachment) => (
 								<button
 									key={attachment.attachmentId}
@@ -836,8 +864,8 @@ function App() {
 										: <span>{attachment.kind === "text" ? "TXT" : "FILE"}</span>}
 									<strong>{attachment.name}</strong>
 									<small>{attachment.modelInput === "image"
-										? selectedAttachmentIds.includes(attachment.attachmentId) ? "将随下一条消息发送" : "点击附到下一条消息"
-										: parsedSources.some((source) => source.sha256 === attachment.sha256) ? inspectionStatusLabels[parsedSources.find((source) => source.sha256 === attachment.sha256)!.inspection.status] : "已上传 · 生成需求单时解析"}</small>
+										? selectedAttachmentIds.includes(attachment.attachmentId) ? en ? "Will be sent with the next message" : "将随下一条消息发送" : en ? "Attach to the next message" : "点击附到下一条消息"
+										: parsedSources.some((source) => source.sha256 === attachment.sha256) ? inspectionStatusLabels[parsedSources.find((source) => source.sha256 === attachment.sha256)!.inspection.status] : en ? "Uploaded · parsed when creating a brief" : "已上传 · 生成需求单时解析"}</small>
 								</button>
 							))}
 						</div>
@@ -854,10 +882,10 @@ function App() {
 							}}
 							rows={2}
 							placeholder={hasActiveBackgroundTask
-								? "当前会话的后台任务完成后可继续发送"
-								: realProvider ? "发送消息给 Blackx…" : "请先连接实际模型 API"}
+								? en ? "You can send again after the background task completes" : "当前会话的后台任务完成后可继续发送"
+								: realProvider ? en ? "Message Blackx…" : "发送消息给 Blackx…" : en ? "Connect a live model API first" : "请先连接实际模型 API"}
 							disabled={!active || !realProvider || replyRunning || hasActiveBackgroundTask}
-							aria-label="对话输入"
+							aria-label={en ? "Conversation input" : "对话输入"}
 						/>
 						<div className="composer-tools">
 							<label className={uploading ? "attachment-upload disabled" : "attachment-upload"}>
@@ -868,10 +896,10 @@ function App() {
 									onChange={(event) => void uploadAttachments(event)}
 									disabled={!active || uploading}
 								/>
-								{uploading ? "上传中…" : "＋ 图片 / 文件"}
+								{uploading ? en ? "Uploading…" : "上传中…" : en ? "＋ Image / file" : "＋ 图片 / 文件"}
 							</label>
-							<span>Enter 发送 · Shift + Enter 换行</span>
-							{replyRunning && <button type="button" className="stop-button" onClick={() => void stopReply()}>停止</button>}
+							<span>{en ? "Enter to send · Shift + Enter for a new line" : "Enter 发送 · Shift + Enter 换行"}</span>
+							{replyRunning && <button type="button" className="stop-button" onClick={() => void stopReply()}>{en ? "Stop" : "停止"}</button>}
 							<button
 								type="submit"
 								className="send-button"
@@ -881,39 +909,39 @@ function App() {
 							</button>
 						</div>
 					</form>
-					<small className="disclaimer">AI 提取的信息需你确认。需求单保留资料来源与版本记录。</small>
+					<small className="disclaimer">{en ? "Confirm AI-extracted information yourself. Requirement briefs retain their source material and version history." : "AI 提取的信息需你确认。需求单保留资料来源与版本记录。"}</small>
 				</div>
 			</main>
 
-			<aside className="proposal-panel" aria-label="多功能工作区">
+			<aside className="proposal-panel" aria-label={en ? "Workspace" : "多功能工作区"}>
 				<header className="proposal-header">
-					<button className="panel-toggle" aria-label="关闭工作区" onClick={() => setReviewOpen(false)}>×</button>
+					<button className="panel-toggle" aria-label={en ? "Close workspace" : "关闭工作区"} onClick={() => setReviewOpen(false)}>×</button>
 					<div>
 						<span className="eyebrow">WORKSPACE</span>
-						<h2>{{ requirement: "需求单工作区", models: "模型监控", files: "文件浏览" }[panelTab]}</h2>
+						<h2>{{ requirement: en ? "Requirements workspace" : "需求单工作区", models: en ? "Model monitor" : "模型监控", files: en ? "File browser" : "文件浏览" }[panelTab]}</h2>
 					</div>
 					{panelTab === "requirement" && requirement && (
 						<span className={`proposal-status ${requirement.state.stageStatus}`}>
-							{stageLabels[requirement.state.stageStatus]}
+							{stageLabel(requirement.state.stageStatus)}
 						</span>
 					)}
 				</header>
 
-				<div className="workspace-tabs" role="tablist" aria-label="工作区功能">
-					{(["requirement", "models", "files"] as const).map((tab, index, tabs) => <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={panelTab === tab} tabIndex={panelTab === tab ? 0 : -1} onClick={() => setPanelTab(tab)} onKeyDown={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3; setPanelTab(tabs[next]); (event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next])?.focus(); } }}>{ { requirement: "需求单", models: "模型调用", files: "文件" }[tab]}</button>)}
+				<div className="workspace-tabs" role="tablist" aria-label={en ? "Workspace tools" : "工作区功能"}>
+					{(["requirement", "models", "files"] as const).map((tab, index, tabs) => <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={panelTab === tab} tabIndex={panelTab === tab ? 0 : -1} onClick={() => setPanelTab(tab)} onKeyDown={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3; setPanelTab(tabs[next]); (event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next])?.focus(); } }}>{ { requirement: en ? "Requirements" : "需求单", models: en ? "Model calls" : "模型调用", files: en ? "Files" : "文件" }[tab]}</button>)}
 				</div>
 				<div className="proposal-body" role="tabpanel" id="panel-requirement" aria-labelledby="tab-requirement" hidden={panelTab !== "requirement"}>
 					{requirementMetrics && requirementMetrics.totals.runs > 0 && (
-						<details className="proposal-section diagnostics"><summary>运行统计</summary>
+						<details className="proposal-section diagnostics"><summary>{en ? "Run metrics" : "运行统计"}</summary>
 							<div className="section-title"><strong>Cross-run Metrics</strong><code>{requirementMetrics.totals.runs} Runs</code></div>
 							<dl className="run-metadata">
-								<div><dt>工作流完成</dt><dd>{requirementMetrics.rates.workflowCompletion === null ? "—" : `${Math.round(requirementMetrics.rates.workflowCompletion * 100)}%`}</dd></div>
-								<div><dt>Stage 通过</dt><dd>{requirementMetrics.rates.stagePass === null ? "—" : `${Math.round(requirementMetrics.rates.stagePass * 100)}%`}</dd></div>
-								<div><dt>评测通过</dt><dd>{requirementMetrics.rates.evaluationPass === null ? "—" : `${Math.round(requirementMetrics.rates.evaluationPass * 100)}%`}</dd></div>
-								<div><dt>需要补充</dt><dd>{requirementMetrics.totals.needsInput}</dd></div>
-								<div><dt>平均 Fact 确认</dt><dd>{requirementMetrics.averages.confirmationRate === null ? "—" : `${Math.round(requirementMetrics.averages.confirmationRate * 100)}%`}</dd></div>
-								<div><dt>候选确认准确率</dt><dd>{requirementMetrics.averages.confirmedCandidateAccuracy === null ? "—" : `${Math.round(requirementMetrics.averages.confirmedCandidateAccuracy * 100)}%`}</dd></div>
-								<div><dt>来源覆盖</dt><dd>{requirementMetrics.averages.sourceCoverageRate === null ? "—" : `${Math.round(requirementMetrics.averages.sourceCoverageRate * 100)}%`}</dd></div>
+								<div><dt>{en ? "Workflow completion" : "工作流完成"}</dt><dd>{requirementMetrics.rates.workflowCompletion === null ? "—" : `${Math.round(requirementMetrics.rates.workflowCompletion * 100)}%`}</dd></div>
+								<div><dt>{en ? "Stage pass" : "Stage 通过"}</dt><dd>{requirementMetrics.rates.stagePass === null ? "—" : `${Math.round(requirementMetrics.rates.stagePass * 100)}%`}</dd></div>
+								<div><dt>{en ? "Evaluation pass" : "评测通过"}</dt><dd>{requirementMetrics.rates.evaluationPass === null ? "—" : `${Math.round(requirementMetrics.rates.evaluationPass * 100)}%`}</dd></div>
+								<div><dt>{en ? "Needs input" : "需要补充"}</dt><dd>{requirementMetrics.totals.needsInput}</dd></div>
+								<div><dt>{en ? "Average fact confirmation" : "平均 Fact 确认"}</dt><dd>{requirementMetrics.averages.confirmationRate === null ? "—" : `${Math.round(requirementMetrics.averages.confirmationRate * 100)}%`}</dd></div>
+								<div><dt>{en ? "Candidate accuracy" : "候选确认准确率"}</dt><dd>{requirementMetrics.averages.confirmedCandidateAccuracy === null ? "—" : `${Math.round(requirementMetrics.averages.confirmedCandidateAccuracy * 100)}%`}</dd></div>
+								<div><dt>{en ? "Source coverage" : "来源覆盖"}</dt><dd>{requirementMetrics.averages.sourceCoverageRate === null ? "—" : `${Math.round(requirementMetrics.averages.sourceCoverageRate * 100)}%`}</dd></div>
 								<div><dt>Artifact / 澄清问题</dt><dd>{requirementMetrics.totals.artifactVersions} / {requirementMetrics.totals.clarificationQuestions}</dd></div>
 								<div><dt>Queue 恢复 / 失败率</dt><dd>{requirementMetrics.queue.recoveryRate === null ? "—" : `${Math.round(requirementMetrics.queue.recoveryRate * 100)}%`} / {requirementMetrics.queue.failureRate === null ? "—" : `${Math.round(requirementMetrics.queue.failureRate * 100)}%`}</dd></div>
 								<div><dt>Tool 失败率</dt><dd>{requirementMetrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirementMetrics.runtime.toolFailureRate * 100)}%`}</dd></div>
@@ -921,51 +949,51 @@ function App() {
 								<div><dt>平均 Runtime 延迟</dt><dd>{requirementMetrics.averages.runtimeLatencyMs === null ? "—" : `${Math.round(requirementMetrics.averages.runtimeLatencyMs)} ms`}</dd></div>
 							</dl>
 							<div className="verification-list">
-								<strong>最近运行时间序列</strong>
+								<strong>{en ? "Recent run timeline" : "最近运行时间序列"}</strong>
 								{requirementMetrics.points.slice(-6).reverse().map((point) => (
-									<span key={point.runId}>{displayTime(point.startedAt)} · {point.industry ?? "unknown"} · {stageLabels[point.stageStatus]} · Artifact v{point.metrics.artifactVersions}</span>
+									<span key={point.runId}>{displayTime(point.startedAt, language)} · {point.industry ?? "unknown"} · {stageLabel(point.stageStatus)} · Artifact v{point.metrics.artifactVersions}</span>
 								))}
 							</div>
 						</details>
 					)}
 					{requirement?.readOnlyReason ? (
-						<section className="proposal-empty"><strong>历史需求（只读）</strong><p>{requirement.readOnlyReason}</p>
-							<p>历史状态：{stageLabels[requirement.state.stageStatus]} · {requirement.state.proposalVersions.length} 个交付版本</p>
-							{!requirementTerminal && <button className="secondary-action" disabled={requirementBusy} onClick={() => void cancelRequirement()}>取消历史任务</button>}
+						<section className="proposal-empty"><strong>{en ? "Historical requirement (read-only)" : "历史需求（只读）"}</strong><p>{requirement.readOnlyReason}</p>
+							<p>{en ? "Historical status: " : "历史状态："}{stageLabel(requirement.state.stageStatus)} · {requirement.state.proposalVersions.length} {en ? "delivery versions" : "个交付版本"}</p>
+							{!requirementTerminal && <button className="secondary-action" disabled={requirementBusy} onClick={() => void cancelRequirement()}>{en ? "Cancel historical task" : "取消历史任务"}</button>}
 						</section>
 					) : !requirement ? (
 						<section className="proposal-empty">
-							<strong>把资料整理成可交付的需求单</strong>
-							<p>围绕包装类型、尺寸、数量、市场、交期和稿件，逐项核对资料，再确认当前版本。</p>
+							<strong>{en ? "Organise source material into a deliverable requirement brief" : "把资料整理成可交付的需求单"}</strong>
+							<p>{en ? "Review packaging type, dimensions, quantity, market, delivery date, and artwork one by one, then confirm the current version." : "围绕包装类型、尺寸、数量、市场、交期和稿件，逐项核对资料，再确认当前版本。"}</p>
 							<button
 								className="primary-action"
 								onClick={() => void startRequirement()}
 								disabled={!hasUserMessage || !realProvider || requirementBusy || sending}
 							>
-								{requirementBusy ? "正在创建…" : "生成需求单"}
+								{requirementBusy ? en ? "Creating…" : "正在创建…" : en ? "Create requirement brief" : "生成需求单"}
 							</button>
-							{!hasUserMessage && <small>先描述一条明确的包装需求。</small>}
+							{!hasUserMessage && <small>{en ? "First, describe a clear packaging request." : "先描述一条明确的包装需求。"}</small>}
 						</section>
 					) : (
 						<>
-							<section className="workflow-track" aria-label="Requirement Brief 工作流进度">
-								<span className="done">收集需求</span>
-								<span className={requirement.state.currentProposal ? "done" : "active"}>整理资料</span>
-								<span className={requirement.state.evaluation ? "done" : requirement.state.stageStatus === "evaluating" ? "active" : ""}>校验</span>
-								<span className={requirement.state.stageStatus === "passed" ? "done" : requirement.state.stageStatus === "waiting_approval" ? "active" : ""}>确认交付</span>
+							<section className="workflow-track" aria-label={en ? "Requirement brief workflow progress" : "Requirement Brief 工作流进度"}>
+								<span className="done">{en ? "Collect" : "收集需求"}</span>
+								<span className={requirement.state.currentProposal ? "done" : "active"}>{en ? "Organise" : "整理资料"}</span>
+								<span className={requirement.state.evaluation ? "done" : requirement.state.stageStatus === "evaluating" ? "active" : ""}>{en ? "Validate" : "校验"}</span>
+								<span className={requirement.state.stageStatus === "passed" ? "done" : requirement.state.stageStatus === "waiting_approval" ? "active" : ""}>{en ? "Confirm" : "确认交付"}</span>
 							</section>
 
 							<section className="proposal-section">
-								<div className="section-title"><strong>任务概览</strong><code>v{requirement.state.aggregateVersion}</code></div>
+								<div className="section-title"><strong>{en ? "Task overview" : "任务概览"}</strong><code>v{requirement.state.aggregateVersion}</code></div>
 								<dl className="run-metadata">
-									<div><dt>行业</dt><dd>包装</dd></div>
-									<div><dt>状态</dt><dd>{stageLabels[requirement.state.stageStatus]}</dd></div>
-									<div><dt>版本</dt><dd>{requirement.state.currentProposal?.version ?? "—"}</dd></div>
-									<div><dt>队列</dt><dd>{requirement.job ? ({ queued: "排队中", leased: "执行中", completed: "已完成", cancelled: "已取消", dead_letter: "执行失败" }[requirement.job.status]) : "—"}</dd></div>
+									<div><dt>{en ? "Industry" : "行业"}</dt><dd>{en ? "Packaging" : "包装"}</dd></div>
+									<div><dt>{en ? "Status" : "状态"}</dt><dd>{stageLabel(requirement.state.stageStatus)}</dd></div>
+									<div><dt>{en ? "Version" : "版本"}</dt><dd>{requirement.state.currentProposal?.version ?? "—"}</dd></div>
+									<div><dt>{en ? "Queue" : "队列"}</dt><dd>{requirement.job ? ({ queued: en ? "Queued" : "排队中", leased: en ? "Running" : "执行中", completed: en ? "Completed" : "已完成", cancelled: en ? "Cancelled" : "已取消", dead_letter: en ? "Failed" : "执行失败" }[requirement.job.status]) : "—"}</dd></div>
 								</dl>
 							</section>
 
-							<details className="proposal-section diagnostics"><summary>本次运行详情</summary>
+							<details className="proposal-section diagnostics"><summary>{en ? "This run's details" : "本次运行详情"}</summary>
 								<div className="section-title"><strong>Product Metrics</strong><code>{requirement.metrics.schemaVersion}</code></div>
 								<dl className="run-metadata">
 									<div><dt>Canonical 命中</dt><dd>{requirement.metrics.canonicalFactHitRate === null ? "—" : `${Math.round(requirement.metrics.canonicalFactHitRate * 100)}%`}</dd></div>
@@ -976,7 +1004,7 @@ function App() {
 									<div><dt>澄清轮次</dt><dd>{requirement.metrics.clarificationRounds}</dd></div>
 									<div><dt>Token (in / out)</dt><dd>{requirement.metrics.runtime.usage ? `${requirement.metrics.runtime.usage.inputTokens} / ${requirement.metrics.runtime.usage.outputTokens}` : "—"}</dd></div>
 									<div><dt>Runtime 延迟</dt><dd>{requirement.metrics.runtime.latencyMs === null ? "—" : `${requirement.metrics.runtime.latencyMs} ms`}</dd></div>
-									<div><dt>成本</dt><dd>{requirement.metrics.runtime.costStatus === "unconfigured" ? "未配置价格" : `$${requirement.metrics.runtime.costUsd}`}</dd></div>
+									<div><dt>{en ? "Cost" : "成本"}</dt><dd>{requirement.metrics.runtime.costStatus === "unconfigured" ? en ? "Pricing not configured" : "未配置价格" : `$${requirement.metrics.runtime.costUsd}`}</dd></div>
 									<div><dt>澄清问题</dt><dd>{requirement.metrics.clarificationQuestions}</dd></div>
 									<div><dt>恢复 / 失败</dt><dd>{requirement.metrics.queue.recoveryCount} / {requirement.metrics.queue.totalFailureCount}</dd></div>
 									<div><dt>Tool 失败率</dt><dd>{requirement.metrics.runtime.toolFailureRate === null ? "—" : `${Math.round(requirement.metrics.runtime.toolFailureRate * 100)}%`}</dd></div>
@@ -984,73 +1012,73 @@ function App() {
 							</details>
 
 							<section className="proposal-section facts-card">
-								<div className="section-title"><strong>核对关键信息</strong><span>{facts.length}</span></div>
+								<div className="section-title"><strong>{en ? "Review key information" : "核对关键信息"}</strong><span>{facts.length}</span></div>
 								{facts.map((fact) => (
 									<div className="fact-row" key={`${fact.key}-${fact.version}`}>
 										<div>
-											<small>{requirementFieldLabels[fact.key] ?? fact.key} · v{fact.version}</small>
+											<small>{fieldLabel(fact.key)} · v{fact.version}</small>
 											<strong>{String(fact.value)}{fact.unit ? ` ${fact.unit}` : ""}</strong>
-											<small>{factStatusLabels[fact.status]} · {fact.sourceType === "model_output" ? "AI 提取" : fact.sourceType === "human_confirmation" ? "人工确认" : "人工输入"}</small>
+											<small>{factStatus(fact.status)} · {fact.sourceType === "model_output" ? en ? "AI extracted" : "AI 提取" : fact.sourceType === "human_confirmation" ? en ? "Human confirmed" : "人工确认" : en ? "Human entered" : "人工输入"}</small>
 										</div>
 										{(fact.status === "suggested" || fact.status === "unverified") && (
 											<div className="fact-actions">
-												<button onClick={() => void resolveFact(fact.key, "rejected")} disabled={requirementBusy || requirementRunning || requirementTerminal}>拒绝</button>
-												<button onClick={() => void resolveFact(fact.key, "verified")} disabled={requirementBusy || requirementRunning || requirementTerminal}>确认</button>
+												<button onClick={() => void resolveFact(fact.key, "rejected")} disabled={requirementBusy || requirementRunning || requirementTerminal}>{en ? "Reject" : "拒绝"}</button>
+												<button onClick={() => void resolveFact(fact.key, "verified")} disabled={requirementBusy || requirementRunning || requirementTerminal}>{en ? "Confirm" : "确认"}</button>
 											</div>
 										)}
 									</div>
 								))}
 								<form className="fact-form" onSubmit={(event) => void recordFact(event)}>
-									<select value={factKey} onChange={(event) => { setFactKey(event.target.value); setFactValue(""); }} aria-label="需求字段" disabled={requirementTerminal}><option value="">选择要补充的字段</option>{fieldOptions.map((key) => <option key={key} value={key}>{requirementFieldLabels[key]}</option>)}</select>
-									<input value={factValue} type={factKey === "quantity" ? "number" : factKey === "target_delivery" ? "date" : "text"} min={factKey === "quantity" ? 1 : undefined} step={1} required onChange={(event) => setFactValue(event.target.value)} placeholder={factKey === "dimensions" ? "例如：宽 160 × 高 230 + 底 80 mm" : "填写内容"} aria-label="字段内容" disabled={requirementTerminal} />
-									<input value={factUnit} onChange={(event) => setFactUnit(event.target.value)} placeholder="单位（可选）" aria-label="字段单位" disabled={requirementTerminal} />
-									<button type="submit" disabled={requirementBusy || requirementRunning || requirementTerminal || !factKey.trim() || !factValue.trim()}>添加待确认信息</button>
+									<select value={factKey} onChange={(event) => { setFactKey(event.target.value); setFactValue(""); }} aria-label={en ? "Requirement field" : "需求字段"} disabled={requirementTerminal}><option value="">{en ? "Choose a field to add" : "选择要补充的字段"}</option>{fieldOptions.map((key) => <option key={key} value={key}>{fieldLabel(key)}</option>)}</select>
+									<input value={factValue} type={factKey === "quantity" ? "number" : factKey === "target_delivery" ? "date" : "text"} min={factKey === "quantity" ? 1 : undefined} step={1} required onChange={(event) => setFactValue(event.target.value)} placeholder={factKey === "dimensions" ? en ? "Example: W 160 × H 230 + bottom 80 mm" : "例如：宽 160 × 高 230 + 底 80 mm" : en ? "Enter value" : "填写内容"} aria-label={en ? "Field value" : "字段内容"} disabled={requirementTerminal} />
+									<input value={factUnit} onChange={(event) => setFactUnit(event.target.value)} placeholder={en ? "Unit (optional)" : "单位（可选）"} aria-label={en ? "Field unit" : "字段单位"} disabled={requirementTerminal} />
+									<button type="submit" disabled={requirementBusy || requirementRunning || requirementTerminal || !factKey.trim() || !factValue.trim()}>{en ? "Add unverified information" : "添加待确认信息"}</button>
 								</form>
-								<small>新增信息需逐项确认。修改后旧需求单会失效，请重新生成。</small>
+								<small>{en ? "Confirm new information item by item. Changes make earlier briefs stale, so generate a new version." : "新增信息需逐项确认。修改后旧需求单会失效，请重新生成。"}</small>
 							</section>
 
-							{content && active && requirement.state.currentProposal && <DeliveryPreview conversationId={active.conversationId} versions={requirement.state.proposalVersions.map((item) => item.version)} currentVersion={requirement.state.currentProposal.version} revision={requirement.state.aggregateVersion} onSources={setParsedSources} />}
+							{content && active && requirement.state.currentProposal && <DeliveryPreview conversationId={active.conversationId} versions={requirement.state.proposalVersions.map((item) => item.version)} currentVersion={requirement.state.currentProposal.version} revision={requirement.state.aggregateVersion} onSources={setParsedSources} language={language} />}
 
 							{requirement.state.currentProposal && !content && (
 								<section className="proposal-section invalid-artifact">
-									<strong>Artifact 无法作为结构化 Requirement Brief 展示</strong>
-									<p>原始输出已经留存，Evaluation 会记录失败原因。</p>
+									<strong>{en ? "The artifact cannot be shown as a structured requirement brief" : "Artifact 无法作为结构化 Requirement Brief 展示"}</strong>
+									<p>{en ? "The raw output is retained; Evaluation records the reason for failure." : "原始输出已经留存，Evaluation 会记录失败原因。"}</p>
 								</section>
 							)}
 
 							{evaluation && (
 								<section className={`proposal-section evaluation ${evaluation.passed ? "passed" : "failed"}`}>
-									<div className="section-title"><strong>需求校验</strong><span>{evaluation.passed ? "通过" : "未通过"}</span></div>
+									<div className="section-title"><strong>{en ? "Requirement validation" : "需求校验"}</strong><span>{evaluation.passed ? en ? "Passed" : "通过" : en ? "Failed" : "未通过"}</span></div>
 									{evaluation.issues.length === 0
-										? <p>结构和权威状态检查通过。{evaluation.approvalEligible ? "可以审批。" : "仍需补充或确认 信息。"}</p>
+										? <p>{en ? `Structure and authoritative-state checks passed. ${evaluation.approvalEligible ? "Ready for approval." : "More information or confirmation is still needed."}` : `结构和权威状态检查通过。${evaluation.approvalEligible ? "可以审批。" : "仍需补充或确认 信息。"}`}</p>
 										: evaluation.issues.map((issue) => <p key={issue.code}>{issue.message}</p>)}
 								</section>
 							)}
 
 							{requirement.state.approval?.status === "requested" && (
 								<section className="proposal-section approval-card">
-									<strong>确认需求单 · v{requirement.state.approval.artifactVersion}</strong>
-									<p>审批只绑定当前版本；后续需求变化会使该审批失效。</p>
+									<strong>{en ? "Confirm requirement brief" : "确认需求单"} · v{requirement.state.approval.artifactVersion}</strong>
+									<p>{en ? "Approval applies only to the current version; future request changes invalidate it." : "审批只绑定当前版本；后续需求变化会使该审批失效。"}</p>
 									<div className="approval-actions">
-										<button onClick={() => void resolveRequirementApproval("rejected")} disabled={requirementBusy}>拒绝</button>
-										<button className="primary-action" onClick={() => void resolveRequirementApproval("approved")} disabled={requirementBusy}>批准当前版本</button>
+										<button onClick={() => void resolveRequirementApproval("rejected")} disabled={requirementBusy}>{en ? "Reject" : "拒绝"}</button>
+										<button className="primary-action" onClick={() => void resolveRequirementApproval("approved")} disabled={requirementBusy}>{en ? "Approve current version" : "批准当前版本"}</button>
 									</div>
 								</section>
 							)}
 
 							{requirement.state.approval && requirement.state.approval.status !== "requested" && (
-								<div className={`approval-result ${requirement.state.approval.status}`}>需求单确认：{requirement.state.approval.status}</div>
+								<div className={`approval-result ${requirement.state.approval.status}`}>{en ? "Requirement brief confirmation: " : "需求单确认："}{requirement.state.approval.status}</div>
 							)}
 							{requirement.job?.status === "dead_letter" && (
 								<div className="proposal-failure">{requirement.job.lastFailure?.message ?? "Requirement Worker 已进入死信队列"}</div>
 							)}
 
 							{requirement.state.stageStatus !== "passed" && requirement.state.stageStatus !== "cancelled" && (
-								<button className="secondary-action" onClick={() => void cancelRequirement()} disabled={requirementBusy}>取消任务</button>
+								<button className="secondary-action" onClick={() => void cancelRequirement()} disabled={requirementBusy}>{en ? "Cancel task" : "取消任务"}</button>
 							)}
-							{requirement.state.stageStatus === "passed" && <p className="cancelled-note">当前版本已批准。如有新需求，请新建任务，保留本次交付记录。</p>}
+							{requirement.state.stageStatus === "passed" && <p className="cancelled-note">{en ? "The current version is approved. Start a new task for new requirements to preserve this delivery record." : "当前版本已批准。如有新需求，请新建任务，保留本次交付记录。"}</p>}
 							{requirement.state.stageStatus === "cancelled" && (
-								<div className="cancelled-note">已保留需求、Fact、Artifact 与审计事件；重新审查会从现有版本继续，不会删除历史。</div>
+								<div className="cancelled-note">{en ? "The request, facts, artifacts, and audit events are retained. Re-review continues from the existing version without deleting history." : "已保留需求、Fact、Artifact 与审计事件；重新审查会从现有版本继续，不会删除历史。"}</div>
 							)}
 							<button
 								className="secondary-action"
@@ -1060,16 +1088,16 @@ function App() {
 								{requirementRunning
 									? progressLabel(requirementActivity)
 									: requirement.state.stageStatus === "cancelled"
-										? "重新审查需求单"
-										: "用最新信息生成新版本"}
+										? en ? "Re-review requirement brief" : "重新审查需求单"
+										: en ? "Generate a new version with the latest information" : "用最新信息生成新版本"}
 							</button>
 						</>
 					)}
 				</div>
-				<div className="proposal-body" role="tabpanel" id="panel-models" aria-labelledby="tab-models" hidden={panelTab !== "models"}>{active && reviewOpen && panelTab === "models" ? <ModelMonitor key={active.conversationId} conversationId={active.conversationId} /> : !active && <p>新建或选择会话后查看模型调用。</p>}</div>
-				<div className="proposal-body" role="tabpanel" id="panel-files" aria-labelledby="tab-files" hidden={panelTab !== "files"}>{active ? <FileExplorer key={active.conversationId} conversationId={active.conversationId} onUseFile={(path) => { setDraft(`请读取并协助处理这个文件：${path}\n处理要求：`); if (window.innerWidth < 1180) setReviewOpen(false); }} /> : <p>新建或选择会话后浏览本机文件。</p>}</div>
+				<div className="proposal-body" role="tabpanel" id="panel-models" aria-labelledby="tab-models" hidden={panelTab !== "models"}>{active && reviewOpen && panelTab === "models" ? <ModelMonitor key={active.conversationId} conversationId={active.conversationId} language={language} /> : !active && <p>{en ? "Create or select a conversation to view model calls." : "新建或选择会话后查看模型调用。"}</p>}</div>
+				<div className="proposal-body" role="tabpanel" id="panel-files" aria-labelledby="tab-files" hidden={panelTab !== "files"}>{active ? <FileExplorer key={active.conversationId} conversationId={active.conversationId} language={language} onUseFile={(path) => { setDraft(en ? `Please read and help me work with this file: ${path}\nRequest:` : `请读取并协助处理这个文件：${path}\n处理要求：`); if (window.innerWidth < 1180) setReviewOpen(false); }} /> : <p>{en ? "Create or select a conversation to browse local files." : "新建或选择会话后浏览本机文件。"}</p>}</div>
 			</aside>
-			{pendingDelete && <DeleteConversationDialog title={pendingDelete.title} busy={deleting} error={deleteError}
+			{pendingDelete && <DeleteConversationDialog title={pendingDelete.title} busy={deleting} error={deleteError} language={language}
 				onCancel={() => setPendingDelete(undefined)} onConfirm={() => void deleteConversation()} />}
 		</div>
 	);
