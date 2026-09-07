@@ -144,6 +144,50 @@ describe("ConversationApiController", () => {
 		});
 	});
 
+	it("uses the requested language for an empty conversation title", () => {
+		const sessions = state();
+		const controller = new ConversationApiController(new FakeAgentRuntime(), sessions);
+
+		expect(controller.create(context, "en")).toMatchObject({
+			status: 201,
+			body: { conversation: { title: "New conversation", preview: "No messages yet" } },
+		});
+		expect(controller.create(context, "zh")).toMatchObject({
+			status: 201,
+			body: { conversation: { title: "新会话" } },
+		});
+	});
+
+	it("requires an English reply for an English user message", async () => {
+		const sessions = state();
+		let systemPrompt = "";
+		let fallbackOutput = "";
+		const runtime = new BlackxAgentRuntime({
+			provider: {
+				async generate(request) {
+					systemPrompt = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
+					fallbackOutput = request.fallbackOutput;
+					return { text: "I can help you confirm the packaging requirements.", toolCalls: [], usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 } };
+				},
+			},
+			skills: new SkillRegistry(),
+			sessions,
+			snapshots: sessions,
+		});
+		const controller = new ConversationApiController(runtime, sessions);
+		const conversationId = conversation(controller.create(context)).conversationId;
+
+		const response = await controller.send(context, conversationId, {
+			messageId: "english-message",
+			content: "I need packaging for coffee beans. What details do you need?",
+		});
+
+		expect(response).toMatchObject({ status: 200 });
+		expect(systemPrompt).toContain("The user's latest message is in English.");
+		expect(systemPrompt).toContain("Do not switch to Chinese");
+		expect(fallbackOutput).toContain("I’m unable to generate a reply");
+	});
+
 	it("keeps internal Agent Sessions out of the user conversation list", () => {
 		const sessions = state();
 		const controller = new ConversationApiController(

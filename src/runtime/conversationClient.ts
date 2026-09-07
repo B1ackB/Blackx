@@ -4,6 +4,7 @@ import type { ConversationFilesView, TaskFileVersion, LocalDirectoryListing, Loc
 import type { RequirementDelivery } from "../manufacturing/requirementDelivery";
 import type { RuntimeActivity } from "./conversationContracts";
 import type { RuntimeTraceRecord } from "./contracts";
+import type { Language } from "../i18n";
 import type {
 	BackgroundTaskView,
 	ConversationAttachment,
@@ -131,19 +132,20 @@ export class ConversationClient {
 		return request<RuntimeHealth>("/api/runtime/health");
 	}
 
-	async list(): Promise<ConversationSummary[]> {
-		return (await request<{ conversations: ConversationSummary[] }>("/api/conversations")).conversations;
+	async list(language: Language = "zh"): Promise<ConversationSummary[]> {
+		return (await request<{ conversations: ConversationSummary[] }>(`/api/conversations?language=${language}`)).conversations;
 	}
 
-	async create(): Promise<ConversationView> {
+	async create(language: Language = "zh"): Promise<ConversationView> {
 		return (await request<{ conversation: ConversationView }>("/api/conversations", {
 			method: "POST",
+			body: JSON.stringify({ language }),
 		})).conversation;
 	}
 
-	async get(conversationId: string): Promise<ConversationView> {
+	async get(conversationId: string, language: Language = "zh"): Promise<ConversationView> {
 		return (await request<{ conversation: ConversationView }>(
-			`/api/conversations/${encodeURIComponent(conversationId)}`,
+			`/api/conversations/${encodeURIComponent(conversationId)}?language=${language}`,
 		)).conversation;
 	}
 
