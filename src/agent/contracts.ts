@@ -22,6 +22,7 @@ export interface AgentMessage {
 	role: "system" | "user" | "assistant" | "tool";
 	content: string;
 	attachments?: AgentImageAttachment[];
+	sources?: Array<{ name: string; mediaType: string; sourceRef: string; sha256: string }>;
 	messageId?: string;
 	createdAt?: string;
 	toolCalls?: AgentToolCall[];
@@ -39,6 +40,8 @@ export interface AgentUsage {
 }
 
 export interface AgentModelRequest {
+	/** Transient visible text only; never an authoritative completed response. */
+	onText?: (text: string) => void | Promise<void>;
 	messages: readonly AgentMessage[];
 	tools: readonly AgentToolDefinition[];
 	reasoning?: "disabled";

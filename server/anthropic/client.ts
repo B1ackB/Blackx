@@ -1,3 +1,4 @@
+import { readAnthropicStream } from "./stream";
 import type {
 	AnthropicMessageRequest,
 	AnthropicMessageResponse,
@@ -45,6 +46,7 @@ export class AnthropicMessagesClient {
   async createMessage(
     request: AnthropicMessageRequest,
     signal?: AbortSignal,
+	onText?: (text: string) => void | Promise<void>,
   ): Promise<AnthropicMessageResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
       method: "POST",
@@ -53,10 +55,14 @@ export class AnthropicMessagesClient {
         "x-api-key": this.apiKey,
         "anthropic-version": this.anthropicVersion,
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify({ ...request, stream: Boolean(onText) }),
       signal,
     });
 
+		if (response.ok && response.headers.get("content-type")?.includes("text/event-stream")) {
+			if (!response.body) throw new AnthropicCompatibilityError("invalid_response", "Missing model stream");
+			return readAnthropicStream(response.body, onText, signal);
+		}
     const body = (await response.json().catch(() => undefined)) as
       | AnthropicMessageResponse
       | { error?: { message?: string; type?: string } }
@@ -69,6 +75,10 @@ export class AnthropicMessagesClient {
 		{ providerStatus: response.status },
       );
     }
+		// Some compatible endpoints return JSON even when streaming is requested.
+		if (body && "content" in body && Array.isArray(body.content)) {
+			for (const block of body.content) if (block.type === "text") await onText?.(block.text);
+		}
     return body as AnthropicMessageResponse;
   }
 

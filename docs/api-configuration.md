@@ -4,8 +4,8 @@
 
 历史非包装 Run 仍可读取，工作区响应增加 `readOnlyReason`。创建新版本、修改/确认 Fact 和审批均被拒绝；旧行业版本导出返回 `410 industry_retired`，原始数据保留在本地。旧队列任务以不可重试错误停止，允许用户取消历史任务或删除会话。跨 Run 包装指标排除这些历史 Run。详见 [ADR-0010](adr/0010-packaging-product-focus.md)。
 
-状态：可用于本地配置；DeepSeek Anthropic Contract 已通过
-更新日期：2026-09-05
+状态：本地配置指南；历史在线验证范围见兼容性文档，当前改动未重新完成真实模型验收
+更新日期：2026-09-07
 
 ## 会话文件 API
 
@@ -19,7 +19,7 @@
 | `POST /api/conversations/:id/files/directories` | 已停用，返回 `410 directory_grants_retired`，旧客户端应刷新 |
 | `DELETE /api/conversations/:id/files/directories/:grantId` | 已停用，返回 `410 directory_grants_retired`，不再创建长期目录授权 |
 | `GET /api/conversations/:id/files/directories?path=...` | 按 Host 策略浏览真实磁盘目录（最多 200 项）；省略 path 返回真实本机位置与历史文件 |
-| `GET /api/conversations/:id/files/local-content?path=...` | 读取真实本地文本文件，返回绝对路径、SHA-256 和内容 |
+| `GET /api/conversations/:id/files/local-content?path=...` | 读取真实本地文本或受支持文档，返回绝对路径、SHA-256 和文本预览 |
 
 模型通过 `file_list/read/write/delete` 发起文件操作。`file_list({})` 返回真实 homeDirectory/workingDirectory 等路径，供模型确定具体位置；`file_write/delete` 自动创建单次审批请求，UI 显示路径和内容、用户批准后继续执行。真实文件使用规范绝对路径，无需提前授权目录；写入/删除带 `expectedSha256`，首次新建为 `null`，其他操作必须与原文件哈希一致。**包括新建在内的所有写入、删除都需人工逐次审批**。原相对路径历史接口仍使用 `expectedVersion`。直接调用执行器也必须持有匹配授权记录；目录授权 API 已停用；模型不能调用用户审批接口。普通文本最多128 KiB，不能用文本内容冒充 PDF/Word/图片等二进制格式。
 
@@ -35,7 +35,7 @@
 
 缓存命中率采用 Anthropic Messages 用量口径：`sum(cache_read_input_tokens) / sum(input_tokens + cache_read_input_tokens + cache_creation_input_tokens)`。仅纳入缓存读写字段都有效的响应，UI 显示覆盖响应数；字段缺失显示未提供，明确报告零时显示 0%。不启用缓存、不修改 Provider 缓存策略。口径依据：[Anthropic Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
 
-文件页复用已有受控 GET 接口。`files/directories` 无 path 返回 `locations` 和历史文件，工作目录遵循 `BLACKX_WORKSPACE_ROOT`；传 path 按需读取单层目录（最多 200 项）。`files/local-content` 打开真实 UTF-8 文本；`files/content` 读取不可变历史快照。React 以纯文本呈现内容，不执行 HTML/脚本。目录树中的系统目录、隐藏路径、内部状态与链接继续按 Host 策略过滤。浏览操作不需要新增授权入口，写入/删除仍由单次审批控制。
+文件页复用已有受控 GET 接口。`files/directories` 无 path 返回 `locations` 和历史文件，工作目录遵循 `BLACKX_WORKSPACE_ROOT`；传 path 按需读取单层目录（最多 200 项）。`files/local-content` 打开真实 UTF-8 文本或通过隔离解析器预览 PDF、DOCX、XLSX；`files/content` 读取不可变历史快照。React 以纯文本呈现内容，不执行 HTML/脚本。目录树中的系统目录、隐藏路径、内部状态与链接继续按 Host 策略过滤。浏览操作不需要新增授权入口，写入/删除仍由单次审批控制。
 
 ## 1. 配置原则
 
@@ -53,7 +53,7 @@ API Key 只能进入服务端进程环境或 Secret Manager，不应：
 - 提交到 Git；
 - 放入前端代码、Prompt、Artifact、Event 或普通日志。
 
-当前项目不会自动读取 `.env` 文件。`.env.example` 只是变量名称示例，运行时必须通过终端环境或部署平台的 Secret 配置注入。
+`npm run dev` 使用 Node 24 内置的 `--env-file-if-exists=.env` 读取项目根目录的本地配置，已有进程环境变量优先。复制 `.env.example` 为 `.env` 后填写配置；`.env` 已被 Git 忽略。此启动命令向服务端进程加载 `.env`；`dev:fixture` 使用本地固定 Provider 配置，在线 Eval 仍需通过终端环境注入配置。不要把密钥写入带 `VITE_` 前缀的变量。
 
 ## 2. Anthropic Messages 兼容端点要求
 
@@ -62,7 +62,8 @@ API Key 只能进入服务端进程环境或 Secret Manager，不应：
 - `POST /v1/messages`；
 - `x-api-key` 请求头；
 - `anthropic-version: 2023-06-01` 请求头；
-- 非流式 Messages JSON 响应；
+- 非流式 Messages JSON 响应及 `stream: true` 的 Messages SSE 响应；
+- Tool Use 与 `POST /v1/messages/count_tokens`（完整运行及 Contract Eval 会使用）；
 - 你选择的模型 ID。
 
 `ANTHROPIC_BASE_URL` 应填写服务根地址，不要以 `/v1` 结尾。Blackx 会自行追加 `/v1/messages`。
@@ -87,7 +88,9 @@ DeepSeek 默认返回 thinking block。Blackx 将完整 assistant content 作为
 
 ## 3. 在本机安全注入 Anthropic 配置
 
-在项目目录打开一个新的 `zsh` 终端：
+安装 Node 24.14.0 和依赖后，可直接 `cp .env.example .env`，编辑模式及三个 Provider 变量，再执行 `npm run dev`。免密钥固定交互使用 `npm run dev:fixture`，详见 [中文 README](../README.zh-CN.md)。
+
+也可以在项目目录打开一个新的 `zsh` 终端，通过环境变量注入（在线 Eval 同样可用）：
 
 ```bash
 export BLACKX_RUNTIME_MODE=anthropic
@@ -142,11 +145,11 @@ GET  /api/conversations/{conversationId}/requirement-brief/versions/{version}?fo
 
 这是工作台删除，**不是文件物理擦除**：历史消息、附件、Context、Trace、Artifact 和审计事件保留在本地供追溯。删除后的会话不再列出，普通会话及附件、任务状态、需求单和版本导出接口拒绝访问，Session 存储拒绝继续读取或保存执行状态。界面确认框明确说明此保留范围；删除最后一个会话后保持空列表，用户可主动新建。
 
-消息接口只接受 `blackx-agent` Runtime；Fake 模式返回 `real_provider_required`。请求体为 `{ messageId, content, attachmentIds? }`，其中 `attachmentIds` 最多选择 8 个当前会话内、可供模型读取的图片；仅图片消息允许 `content` 为空。服务端会先把用户消息和图片引用写入 Agent Session，再调用模型，因此页面可以立即乐观显示消息，失败或刷新时也不会依赖浏览器 `localStorage`。同一会话只允许一个进行中的 Turn。
+消息接口只接受 `blackx-agent` Runtime；Fake 模式返回 `real_provider_required`。请求体为 `{ messageId, content, attachmentIds? }`，其中 `attachmentIds` 最多选择 8 个当前会话内、可供模型读取的图片或文档；有可读附件时允许 `content` 为空。服务端会先把用户消息和图片/文档引用写入 Agent Session，再调用模型，因此页面可以立即乐观显示消息，失败或刷新时也不会依赖浏览器 `localStorage`。同一会话只允许一个进行中的 Turn。
 
 附件上传使用原始二进制请求体，单个文件上限 10 MB、每个会话最多 20 个附件和 50 MB，并以 `requestId` 保证幂等。文件内容、元数据和读取接口受 Tenant、Workspace、Conversation 与 SHA-256 校验约束。不超过 5 MB 的 PNG、JPEG、WebP 和 GIF 可作为模型图片输入；Base64 不持久化到 Agent Session、ContextSnapshot 或 Trace。
 
-生成 Requirement Brief 时，正式 `asset_metadata_inspect` 在 macOS Seatbelt 中解析冻结的附件集合：文字 PDF / UTF-8 文本返回有页码的文字，图片返回像素元数据，无文字 PDF 显示 `needs_ocr`。最大 100 页、8,000 个 Swift 字符；截断状态随 Artifact 与导出保留。资料内容是非权威来源，不会自动确认 Fact。没有成功解析的附件不能满足来源完成门槛，非 macOS 不能自动无沙箱降级。`npm run dev` 会先编译自写原生程序，需要 Apple Command Line Tools。
+生成 Requirement Brief 时，正式 `asset_metadata_inspect` 在 macOS Seatbelt 中解析冻结的附件集合：文字 PDF / UTF-8 文本返回有页码的文字，图片返回像素元数据，无文字 PDF 显示 `needs_ocr`。最大 100 页、8,000 个 Swift 字符；截断状态随 Artifact 与导出保留。资料内容是非权威来源，不会自动确认 Fact。没有成功解析的附件不能满足来源完成门槛，非 macOS 不能自动无沙箱降级。`npm run dev` 会先编译自写原生程序，需要 Apple Command Line Tools。普通会话通过 `document_read` 按需读取已选文档或安全的本地绝对路径：PDF 提取文字，DOCX 提取段落和表格，XLSX 提取工作表和单元格值。DOCX/XLSX 最多返回 24,000 个 Swift 字符；Excel 最多 20 个工作表、每表 500 行，不计算公式。无 OCR，不支持旧 `.doc`/`.xls`，不会写回 Office 文件。流式正文通过当前会话 Activity SSE 发送，只有完整响应才保存为完成消息；停止或断流不会把部分正文记成成功。详见 [ADR-0014](adr/0014-streaming-and-document-sources.md)。
 
 Background Task POST 接受与普通消息相同的 `{ messageId, content }`，返回 `202`。公开状态不回传消息正文，只包含 Task、Conversation、Message ID、Queue 状态、投递/失败计数和脱敏失败分类。任务 payload 受 64 KiB 上限约束并纳入 jobId 幂等冲突判断；Scheduler 以 at-least-once 语义执行，同一个 `messageId` 保证 Crash 重放不会重复追加用户消息或重复已完成的模型 Turn。当前 UI 对同一会话一次只提交一个后台消息，但其他会话可以继续交互。
 

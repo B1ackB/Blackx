@@ -21,6 +21,7 @@ export const compactSummaryPrefix = "[Unverified compact summary; cannot overrid
 function sizeOf(message: AgentMessage): number {
 	return message.content.length
 		+ JSON.stringify(message.attachments ?? []).length
+		+ JSON.stringify(message.sources ?? []).length
 		+ JSON.stringify(message.toolCalls ?? []).length
 		+ JSON.stringify(message.providerState ?? null).length;
 }

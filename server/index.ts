@@ -95,6 +95,7 @@ const services = createRuntime(process.env, {
 		})),
 		researchSourceTool,
 		assetInspection.tool(),
+		assetInspection.documentTool((context, path) => conversationFiles.readDocument(context, path)),
 		createProjectSourceReadTool(requirementBriefEngine, conversationAttachments),
 	],
 	autonomouslyApprovedTools: automationWriteToolNames,
@@ -107,7 +108,7 @@ const conversationApi = new ConversationApiController(
 	agentState,
 	undefined,
 	undefined,
-	[...automationToolNames, ...conversationFileToolNames],
+	[...automationToolNames, ...conversationFileToolNames, "document_read"],
 	conversationAttachments,
 );
 const stageJobOutbox = new StageJobOutbox(proposalEngine, eventStore, stageJobQueue);
@@ -401,7 +402,7 @@ server.on("request", async (request, response) => {
 		return;
 	}
 
-	const filesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/files(?:\/(content|local-content|directories|directories\/([^/]+)|approvals\/([^/]+)))?$/);
+	const filesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/files(?:\/(content|local-content|document-content|directories|directories\/([^/]+)|approvals\/([^/]+)))?$/);
 	if (filesMatch) {
 		try {
 			const runId = decodeURIComponent(filesMatch[1]);
@@ -414,6 +415,11 @@ server.on("request", async (request, response) => {
 				json(response, 200, conversationFiles.read(scope, url.searchParams.get("path") ?? "", url.searchParams.has("version") ? Number(url.searchParams.get("version")) : undefined));
 			} else if (request.method === "GET" && filesMatch[2] === "local-content") {
 				json(response, 200, conversationFiles.readLocal(scope, url.searchParams.get("path") ?? ""));
+			} else if (request.method === "GET" && filesMatch[2] === "document-content") {
+				const controller = new AbortController();
+				response.on("close", () => controller.abort());
+				const document = await assetInspection.preview(scope, url.searchParams.get("path") ?? "", (context, path) => conversationFiles.readDocument(context, path), controller.signal);
+				json(response, 200, { document });
 			} else if (request.method === "GET" && filesMatch[2] === "directories") {
 				json(response, 200, conversationFiles.browse(scope, url.searchParams.get("path") ?? undefined));
 			} else if ((request.method === "POST" && filesMatch[2] === "directories") || (request.method === "DELETE" && filesMatch[3])) {
@@ -608,7 +614,21 @@ server.on("request", async (request, response) => {
 		if (request.method === "GET" && conversationControl[2] === "activity") {
 			const brief = url.searchParams.get("run") === "requirement" ? requirementBriefWorkspaceApi.get(localAccess.identity, conversationId) : undefined;
 			const runId = brief ? (brief.body as { requirementBrief?: { runId: string } }).requirementBrief?.runId : conversationId;
-			json(response, 200, { activity: runId ? services.activity.get({ ...localAccess.identity, runId }) : undefined });
+			if (runId && url.searchParams.get("stream") === "1") {
+				response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" });
+				const scope = { ...localAccess.identity, runId };
+				let latest = services.activity.get(scope);
+				let dirty = true;
+				const unsubscribe = services.activity.subscribe(scope, (event) => { latest = event; dirty = true; });
+				const timer = setInterval(() => {
+					if (response.writableNeedDrain) return;
+					if (conversationApi.get(context, conversationId).status !== 200) { response.end(); return; }
+					if (dirty) { response.write(`data: ${JSON.stringify({ activity: latest })}\n\n`); dirty = false; }
+				}, 50);
+				const heartbeat = setInterval(() => { if (!response.writableNeedDrain) response.write(": heartbeat\n\n"); }, 15_000);
+				response.on("close", () => { clearInterval(timer); clearInterval(heartbeat); unsubscribe(); });
+				response.flushHeaders();
+			} else json(response, 200, { activity: runId ? services.activity.get({ ...localAccess.identity, runId }) : undefined });
 		} else if (request.method === "POST" && conversationControl[2] !== "activity") {
 			const result = conversationControl[2] === "stop"
 				? conversationApi.cancel(context, conversationId)
@@ -659,7 +679,7 @@ server.on("request", async (request, response) => {
 		const format = url.searchParams.get("format");
 		if (format === "md" || format === "html") {
 			response.writeHead(200, { "content-type": format === "html" ? "text/html; charset=utf-8" : "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="requirement-v${delivery.version}.${format}"`, "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" });
-			response.end(format === "html" ? deliveryHtml(delivery) : deliveryMarkdown(delivery));
+			response.end(format === "html" ? deliveryHtml(delivery, url.searchParams.get("language") === "en" ? "en" : "zh") : deliveryMarkdown(delivery, url.searchParams.get("language") === "en" ? "en" : "zh"));
 		} else json(response, 200, { delivery });
 		return;
 	}

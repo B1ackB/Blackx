@@ -1,3 +1,4 @@
+import { errorText } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import { ConversationClient } from "../runtime/conversationClient";
 import type { ConversationFilesView, TaskFileVersion } from "../runtime/conversationFiles";
@@ -20,7 +21,7 @@ export function ConversationFiles({ conversationId, language }: { conversationId
 		let timer: ReturnType<typeof setTimeout>;
 		async function refresh() {
 			try { const next = await client.files(conversationId); if (!stopped) setView(next); }
-			catch (cause) { if (!stopped) setError(cause instanceof Error ? cause.message : "无法读取文件区"); }
+			catch (cause) { if (!stopped) setError(errorText(cause, language)); }
 			if (!stopped) timer = setTimeout(() => void refresh(), 1000);
 		}
 		void refresh();
@@ -29,13 +30,13 @@ export function ConversationFiles({ conversationId, language }: { conversationId
 	async function decide(id: string, decision: "approved" | "rejected") {
 		setBusy(true); setError("");
 		try { const next = await client.decideFile(conversationId, id, decision); if (alive.current) setView(next); }
-		catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : "审批失败"); }
+		catch (cause) { if (alive.current) setError(errorText(cause, language)); }
 		finally { if (alive.current) setBusy(false); }
 	}
 	async function read(file: TaskFileVersion) {
 		setError("");
 		try { const next = await client.readFile(conversationId, file.path, file.version); if (alive.current) setPreview(next); }
-		catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : "读取失败"); }
+		catch (cause) { if (alive.current) setError(errorText(cause, language)); }
 	}
 	function download() {
 		if (!preview) return;
@@ -56,7 +57,7 @@ export function ConversationFiles({ conversationId, language }: { conversationId
 			<div className="file-actions"><button disabled={busy} onClick={() => void decide(approval.id, "rejected")}>{en ? "Reject" : "拒绝"}</button><button className="file-approve-button" disabled={busy} onClick={() => void decide(approval.id, "approved")}>{en ? `Approve this ${approval.operation === "delete" ? "deletion" : "write"}` : `批准此次${approval.operation === "delete" ? "删除" : "写入"}`}</button></div>
 			<small>{en ? "Approval waits for up to two minutes and expires if the task stops. Approve only the displayed content and version." : "审批最多等待两分钟，任务停止后失效。只批准当前显示的内容和版本。"}</small>
 		</article>)}
-		{error && <p role="alert" className="file-error">{error}</p>}
+		{error && <p role="alert" className="file-error">{errorText(error, language)}</p>}
 		<details className="file-browser"><summary>{en ? "Conversation files" : "会话文件"} · {paths.length} {en ? "paths" : "个路径"}{view.files.some((file) => file.status === "deleted") ? en ? " (including history)" : "（含历史）" : ""}</summary>
 			<p>{en ? "Local historical snapshots are saved here. Tell the Agent which path to save or modify; it asks permission before acting. Text is limited to 128 KiB." : "这里保存本机历史快照。直接告诉 Agent 要保存或修改的路径，执行前会询问是否允许。文本最多 128 KiB。"}</p>
 			<div className="file-version-list">{paths.map((path) => {

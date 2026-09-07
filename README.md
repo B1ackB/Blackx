@@ -1,74 +1,169 @@
 # Blackx
 
-Blackx 是一个拥有自研 Agent Core、面向可验证交付物的长任务 Agent 产品。Agent Core 与当前 M1 保持行业无关；Print 作为已存在的 Domain Pack 和纵向回归资产保留。
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-当前产品仅面向包装行业的售前与跟单人员，帮助整理包装袋、纸盒、礼盒、运输包装和包装标签需求。M0 Agent Core、M1 Durable Runtime 和 M2 Requirement Brief 工程链路已建立；当前 M2 评测为 10 个包装案例。此前跨行业样例与真实模型浏览器记录仅作为历史证据，不代表当前包装产品已获真实用户验证。产品可用性、返工改善和付费意愿仍需包装目标用户验证。
+Blackx is a local Agent workspace for **packaging presales and order follow-up**. It combines a self-built, industry-neutral Agent Core with a workflow layer that manages sourced facts, versioned requirement briefs, approvals, and recovery.
 
-2026-09-05 新增本地产品切片：lease 丢失与迟到提交保护、Host 会话身份绑定、真实 macOS `asset_metadata_inspect`、可折叠需求单工作区、安全 Markdown、停止/重试、附件来源页、版本比较以及 Markdown/HTML/JSON 导出。见[实施与验收记录](docs/evidence/local-product-slice-2026-09-05.md)。这是 M3 的一个已验证切片，完整 G0–G6 尚未通过。
+The project is an engineering prototype you can run and inspect locally. It is not a production SaaS or a packaged desktop application. The current product focuses on packaging; the `print` domain identifier is retained for compatibility.
 
-## 本地演示
+## What you can do
+
+- Create and delete conversations; receive streamed replies; stop and retry a turn.
+- Switch the interface between Chinese and English. Existing messages and source documents retain their original language.
+- Attach documents and images. Read PDF, DOCX, and XLSX text through a sandboxed local parser on macOS.
+- Browse local directories and preview files in the right panel. Ask the Agent to create, edit, or delete text files, with approval for each write or deletion.
+- Inspect the configured model, request outcomes, latency, token usage, and reported cache usage in the same panel.
+- Build a packaging requirement brief from source material, review facts, create versions, and approve or export a delivery.
+- Inspect persisted workflow events, background jobs, and bounded schedules through the implementation and local workspace.
+
+## Requirements
+
+| Requirement | Supported baseline |
+| --- | --- |
+| Node.js | **24.14.0**, recorded in `.nvmrc`; package engines target Node 24 |
+| Package manager | npm; use the committed `package-lock.json` with `npm ci` |
+| Full local workflow | macOS with Apple Command Line Tools (`xcode-select --install`) |
+| Browser | A modern browser connecting to `127.0.0.1` |
+| Real model access | An authorized Anthropic Messages-compatible endpoint, model ID, and API key |
+
+The native document reader uses Swift and macOS Seatbelt. Other platforms do not silently fall back to an unsandboxed parser. Cross-platform support for the complete product has not been validated. Node 24 is required by the project baseline, including its use of built-in SQLite.
+
+## Install
 
 ```bash
-source ~/.zshrc
-npm install
-npm run eval:anthropic-contract
-BLACKX_RUNTIME_MODE=anthropic npm run dev
+git clone https://github.com/B1ackB/Blackx.git
+cd Blackx
+# If you use nvm:
+nvm install
+nvm use
+npm ci
 ```
 
-浏览器打开 Vite 输出的本地地址。左侧可以创建、选择和删除服务端会话；删除需确认，会停止关联任务、暂停定时任务，并取消未完成的需求单。历史资料和已批准交付保留用于审计，普通工作台不再访问；具体语义见 [API 配置](docs/api-configuration.md)。发送消息后，用户消息立即显示，模型回复完成后写回同一个持久 Agent Session。Agent 可在普通 Loop 中自主调用受控 Background/Cron Tools；用户无需选择另一种发送模式。Background Job 进入持久 Stage Job Queue，Cron Schedule 进入独立持久 Store，用户可以切换或新建会话。消息接口明确拒绝 Fake Runtime，必须配置 `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL` 和 `ANTHROPIC_MODEL` 并用 `BLACKX_RUNTIME_MODE=anthropic` 启动；会话管理不需要真实模型。
+If you already have a checkout, run the commands from its root. `nvm` is optional: an existing Node 24.14.0 installation is sufficient. Repository access may require your GitHub credentials.
 
-请使用 Host 输出的 `http://127.0.0.1:<port>` 地址。`npm run dev` 会先编译原生解析器，需要 macOS 和 Apple Command Line Tools；Host 重启后刷新浏览器以取得新的本地会话凭据。PDF 最多解析 100 页 / 8,000 个字符，截断与无文字 PDF 会明确标记；图片当前只保证像素元数据解析。所有提取信息都需要人工确认。
+Choose one of the following startup paths.
 
-不配置外部模型也可以验收完整工程链路：
+### 1. Explore without an API key
 
 ```bash
-npm ci
-npm run check:local
-# 或打开隔离测试页面（固定本地响应，临时数据，退出时清理）
 npm run dev:fixture
 ```
 
-页面使用顺序：发送客户需求并上传资料 → 打开“需求单”并生成 → 核对来源和字段 → 逐项确认 → 生成新版本 → 批准当前版本 → 导出。已经批准的任务保持只读；新的需求另建任务。打印版 HTML 可通过浏览器打印为 PDF，导出文件是需求记录，不是生产就绪文件。
+Wait for the startup result, then open **http://127.0.0.1:5178**. This command compiles the native reader, prepares temporary example documents, and starts the workspace against a local provider with **fixed responses**. No external model is called; the replies demonstrate integration behavior rather than general model reasoning. The initial checks can take a little time.
 
-右侧“工作区”提供三个页签：需求单、模型调用、文件。模型调用显示配置模型与响应模型、生成与 Token 计数请求次数、成功/失败/取消状态、响应耗时、Token 与缓存统计，可切换当前会话或需求单工作流。文件页支持工作目录/文档/桌面快捷入口、按需展开目录树、打开文本文件与会话快照，点击“交给 Agent”将路径放入聊天草稿。工作目录使用 `BLACKX_WORKSPACE_ROOT`（默认启动目录）。详细口径和验收见 [多功能工作区](docs/evidence/multifunction-workspace-2026-09-05.md)。
+Use `Ctrl+C` to stop it. The fixture's temporary workspace is removed on normal shutdown; do not use it to store work you want to keep. Local file writes and deletions still require approval.
 
-Agent 可以操作电脑上的真实文本文件。直接在对话中说“把包装需求保存到我的文档目录”或提供具体文件路径；Agent 查询本机位置并准备内容后，会自动展示“是否允许新建/修改/删除此文件？”的审批卡片，列出绝对路径和修改前后内容。**无需预先添加或授权目录；读取直接执行，所有新建、修改和删除必须逐次批准**。批准仅对这一次路径、内容和版本有效，随后直接操作原路径；拒绝或停止不会修改文件，修改和删除前保留备份。文本最多 128 KiB，二进制文档仍需专用工具。旧会话文件和历史快照也位于本机。见 [即时文件审批](docs/adr/0013-just-in-time-file-approval.md)。
+For a persistent workspace without a model, `npm run dev` defaults to `fake` mode at **http://127.0.0.1:5173**. You can manage conversations, but sending chat messages is intentionally disabled in this mode.
 
-Provider 只运行在 Node.js 服务端；浏览器不会读取 API Key。模型可以在 Proposal Stage 内生成结构化候选建议，但不能创建已验证 Fact、直接改变 Artifact 状态或绕过确定性评测与审批。
-
-固定离线评测可独立运行：
+### 2. Connect a real model
 
 ```bash
-npm run eval:offline
-npm run eval:m1
-npm run eval:m2
+cp .env.example .env
 ```
 
-`npm run eval:m1` 会离线贯通 Queue → Worker → Artifact Version → Evaluation → Approval → Stage Gate。M1 真实 DeepSeek Gate 使用 `npm run eval:m1-online`，走同一条企业链路，并要求模型先调用固定只读 Source Tool，再生成经过确定性 Schema、Citation 和 Fact Lineage 检查的 Evidence Report。
+Edit `.env` locally:
 
-`npm run eval:m2` 验证 `requirement-brief.v1` 包装产品 Contract：固定 10 个包装售前需求任务，检查必填缺口、Fact 来源权威性、下一步动作和 Artifact 审批资格。当前报告标识为 `blackx-m2-packaging-workflow-baseline-v3`，不能与旧跨行业基线混同。范围与旧数据兼容见 [ADR-0010](docs/adr/0010-packaging-product-focus.md)。
+```dotenv
+BLACKX_RUNTIME_MODE=anthropic
+BLACKX_PORT=5173
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+ANTHROPIC_MODEL=your-provider-supported-model-id
+ANTHROPIC_API_KEY=your-private-api-key
+```
 
-Anthropic Messages Provider Adapter 已具备离线 Contract Test 和明确的能力矩阵；DeepSeek `deepseek-v4-flash` 已通过带 thinking 回传的真实 Tool Loop Contract。官方 Anthropic 端点仍被账户状态阻塞，且兼容 Contract 通过不等于生产完成能力。
+Replace the example values with your provider's configuration, then run:
 
-真实 Provider Contract 使用 `npm run eval:anthropic-contract`，同时验证 Token Count、摘要 Compact 和 Model → Tool → Model。只有脚本输出 `passed: true` 才算 M0 Online Gate 通过。
+```bash
+npm run dev
+```
 
-Web UI 已移除 `LocalEventStore`、客户端事实投影和本地恢复模拟；实时主链路为 `UI → Conversation API → BlackxAgentRuntime → Context/Skill/Loop → Anthropic-compatible Provider → FileAgentStateStore`。模型可在 Loop 内通过受控 Tool 创建 Background Job 或有限 Cron Schedule，Dispatcher 再把到期 occurrence 投入同一个 Stage Job Queue。Enterprise Kernel 另提供原子 Event Store、Transactional Outbox、SQLite 单主机多 Worker Adapter、指标与 DLQ redrive。当前 Cron 不是任意脚本执行器，也不是 Sub-agent 或多主机分布式 Queue。
+Open **http://127.0.0.1:5173**. This single command builds the native reader and runs the API host with the Vite UI. A separate frontend terminal is not needed.
 
-## 文档入口
+`npm run dev` automatically reads `.env`; existing shell environment variables take precedence. `.env` is ignored by Git. Keep keys server-side and never put them in messages, committed files, or `VITE_` variables. This startup script injects `.env` into the server process; online evaluation scripts expect exported provider variables.
 
-- [开发约束](AGENTS.md)
-- [API 配置与 Online Eval 指南](docs/api-configuration.md)
-- [架构原则](docs/architecture/principles.md)
-- [已确认项目决策](docs/project-decisions.md)
-- [产品交互与信息责任模型](docs/product-interaction-model.md)
-- [首个纵向切片演示手册](docs/demo-walkthrough.md)
-- [Runtime 集成边界](docs/runtime-integration.md)
-- [Anthropic Messages 出站兼容矩阵](docs/anthropic-compatibility.md)
-- [封口袋标准权威与派生规则](docs/sealing-bag-standards.md)
-- [产品路线图](docs/roadmap.md)
-- [M0：Blackx Agent Core](docs/milestone-0-agent-core.md)
-- [M1：Durable Single-Agent Runtime](docs/milestone-1-durable-runtime.md)
-- [M2：包装需求澄清与审批闭环](docs/milestone-2-product-slice.md)
-- [M2：合成用户验证样例与证据边界](docs/evidence/m2-synthetic-user-validation-2026-09-05.md)
-- [M3：Local Product Hardening 与 Native Sandbox Gate](docs/milestone-3-production-hardening.md)
-- [历史 Print Proposal 纵向切片](docs/milestone-1-proposal-slice.md)
+The provider adapter uses Anthropic Messages, including streaming and tools; the full runtime also uses token counting. `ANTHROPIC_BASE_URL` is the service root: Blackx appends `/v1/messages` and `/v1/messages/count_tokens`. An OpenAI Chat Completions endpoint is not interchangeable. A “configured” status does not prove the endpoint supports every required capability. See the [configuration guide](docs/api-configuration.md) and [compatibility notes](docs/anthropic-compatibility.md) (currently Chinese).
+
+Real requests can incur provider charges. Selected document contents and model inputs may be sent to the configured provider; local parsing does not make real-model operation fully offline.
+
+## First useful workflow
+
+1. Create a conversation and describe a packaging request. Attach a text PDF, DOCX, or XLSX if useful.
+2. Ask the Agent to read the document and identify missing requirements. Use the right panel to inspect files and model requests.
+3. Create a requirement brief, review the source-backed facts, and explicitly confirm the values you know. Model suggestions remain unverified until confirmed.
+4. Review the resulting version and its validation status. Approve and export when the workflow allows it; changing upstream facts makes affected outputs stale.
+5. To save a text file locally, ask for a specific location. Review the proposed absolute path and content in the approval request, then approve or reject it.
+
+The no-key fixture has a scripted response sequence; use a real provider for arbitrary conversations. No approved requirement brief should be treated as a production-ready print file.
+
+## How the code fits together
+
+```text
+Browser workspace
+    → Local API host
+        → AgentRuntimePort → Agent Core → Model Provider / controlled tools
+        → Workflow engine → Facts / Artifact versions / Approvals / Events
+                                              ↑
+                                Packaging domain rules and evaluators
+```
+
+The Agent chooses actions within a stage. The Host owns permissions, workflow transitions, validation, and completion. A model finishing its reply does not itself complete a business workflow.
+
+| Location | Responsibility |
+| --- | --- |
+| `src/App.tsx`, `src/components/`, `src/i18n.ts` | React workspace, multifunction panel, bilingual UI |
+| `src/agent/` | Industry-neutral loop, context, tools, hooks, sessions, and compaction |
+| `src/enterprise/`, `server/enterprise/` | Workflow contracts, events, persistence, and recovery |
+| `src/manufacturing/`, `server/manufacturing/` | Packaging requirement workflow and delivery |
+| `src/print/` | Existing print domain capabilities and regression assets |
+| `server/index.ts`, `server/runtime/` | Local API, runtime adapters, file policy, approvals, and telemetry |
+| `server/anthropic/` | Anthropic protocol client and stream parsing |
+| `native/` | Swift document/asset readers executed under macOS isolation |
+| `eval/`, `server/testing/` | Repeatable evaluations, local fixtures, and failure cases |
+| `docs/` | Architecture decisions, evidence, configuration, and roadmap |
+
+Start with [architecture principles](docs/architecture/principles.md), then follow a feature from the UI through the local API and runtime. Read [AGENTS.md](AGENTS.md) before changing architecture or implementation. Most deeper design documents are currently Chinese; both READMEs cover the complete onboarding path.
+
+## Verification commands
+
+| Command | Purpose | External model needed? |
+| --- | --- | --- |
+| `npm run check` | Unit/integration suite, TypeScript checks, frontend build | No |
+| `npm run eval:offline` | Fixed offline Harness evaluation | No |
+| `npm run eval:m1` | M1 workflow evaluation | No |
+| `npm run eval:m2` | Packaging requirement-brief evaluation | No |
+| `npm run build:native` | Compile the macOS reader | No |
+| `npm run test:native` | Real macOS sandbox and document tests | No |
+| `npm run eval:product` | Local provider/API/workflow smoke test; cleans up afterward | No |
+| `npm run check:local` | All the above checks in sequence; full macOS baseline | No |
+| `npm run eval:anthropic-contract` | Validate a configured provider contract | Yes; may incur charges |
+
+For online evaluation, inject provider variables into the terminal environment as described in the [configuration guide](docs/api-configuration.md). It is not required for installation or the no-key fixture.
+
+`npm run dev:web` starts only Vite and does not provide the API host. `npm run build` produces the frontend build and type-checks the project; it does not package a standalone server or desktop installer. Serving `dist/` alone is not a complete deployment.
+
+## Data, permissions, and current limits
+
+- **Local storage:** normal runs persist state under `.blackx-data/` by default. It contains conversations, events, attachments, artifacts, backups, and model request records. Keep this directory private; it is excluded from Git. Generated native tools live in `.blackx-tools/`.
+- **File access:** safe local paths can be read under Host policy. `BLACKX_WORKSPACE_ROOT` sets the default workspace location; it is not a blanket authorization or a guarantee that all reads are confined there. Hidden/system/internal paths and symlinks are restricted. Every new text file, modification, and deletion needs a specific approval. Hash/version checks reject stale operations. Text writes are limited to 128 KiB; Office/PDF write-back is not implemented.
+- **Deletion:** deleting a conversation removes access through the workspace and stops its associated work. Historical data remains for audit; this is not secure erasure. Local file deletion removes the original file after approval and retains a managed backup.
+- **Documents:** PDF text extraction has no OCR. DOCX supports paragraphs and tables; XLSX supports sheet/cell values and does not recalculate formulas. Legacy `.doc`/`.xls` and encrypted documents are unsupported. Parsing is bounded: files up to 10 MiB, PDF up to 100 pages / 8,000 Swift characters, DOCX/XLSX up to 24,000 characters, XLSX up to 20 sheets / 500 rows per sheet. Truncated output is marked.
+- **Observability:** token/cache statistics reflect fields actually returned by the provider, with retention and coverage limits. Missing data is not invented. Fixture numbers are not performance or billing evidence.
+- **Deployment:** the host binds to loopback and uses local session/Host/Origin checks. This is not a multi-user login system or proof of production tenant isolation. Native resource controls and broader deployment hardening remain unfinished.
+- **Evidence:** offline, native, and local product checks are separate from real-provider and real-user validation. See the [2026-09-07 feature evidence](docs/evidence/streaming-bilingual-documents-2026-09-07.md), [streaming/document ADR](docs/adr/0014-streaming-and-document-sources.md), and [roadmap](docs/roadmap.md) for scope and remaining work.
+
+## Troubleshooting
+
+| Symptom | Next step |
+| --- | --- |
+| Unsupported Node / SQLite or env-file errors | Check `node --version`; switch to Node 24.14.0, then run `npm ci` again |
+| `xcrun` / Swift compilation fails | Install Apple Command Line Tools, then run `npm run build:native` |
+| Chat sending is disabled | `fake` mode intentionally rejects sends; use `dev:fixture` or configure a real provider |
+| Configuration changes have no effect | Restart the host; check whether existing shell variables override `.env` |
+| Port already in use | Stop the process you own, or set another `BLACKX_PORT` for `npm run dev`; fixture mode uses 5178 |
+| API returns 403 | Open the local UI and refresh after a host restart; bare API requests lack the local session token |
+| Provider fails after appearing configured | Check base URL, model ID, credentials, and Messages/streaming/tool/token-count compatibility |
+| A scanned PDF has no text | Provide a text PDF or extract the text separately; OCR is not included |
+
+## License
+
+[MIT](LICENSE). Third-party dependencies and their review are documented in [docs/dependencies.md](docs/dependencies.md). Reference repositories are not production source dependencies.

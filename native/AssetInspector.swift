@@ -27,6 +27,8 @@ if data.starts(with: Data("%PDF-".utf8)) {
 	result["pages"] = pages
 	result["truncated"] = truncated
 	result["status"] = pages.contains { !(($0["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) } ? "parsed" : "needs_ocr"
+} else if data.starts(with: [0x50, 0x4b]), let office = inspectOffice(url: url, data: data) {
+	result.merge(office) { _, new in new }
 } else if let image = CGImageSourceCreateWithData(data as CFData, nil),
 	let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
 	let width = properties[kCGImagePropertyPixelWidth] as? Int,

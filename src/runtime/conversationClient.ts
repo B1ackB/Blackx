@@ -1,3 +1,4 @@
+import { readEvents } from "./eventStream";
 import type { ModelTelemetryView } from "./modelTelemetry";
 import type { RuntimeHealth } from "./contracts";
 import type { ConversationFilesView, TaskFileVersion, LocalDirectoryListing, LocalFileLocations } from "./conversationFiles";
@@ -82,6 +83,12 @@ async function attachmentRequest(path: string, init?: RequestInit): Promise<Resp
 }
 
 export class ConversationClient {
+	async watchActivity(conversationId: string, onActivity: (activity?: RuntimeActivity) => void, signal: AbortSignal): Promise<void> {
+		const response = await attachmentRequest(`/api/conversations/${encodeURIComponent(conversationId)}/activity?stream=1`, { signal, headers: { accept: "text/event-stream" } });
+		if (!response.body) throw new ConversationClientError("stream_unavailable", "Missing response stream");
+		for await (const event of readEvents(response.body, signal)) onActivity(JSON.parse(event.data).activity ?? undefined);
+	}
+
 	modelCalls(conversationId: string, requirement = false): Promise<ModelTelemetryView> {
 		return request(`/api/conversations/${encodeURIComponent(conversationId)}/model-calls${requirement ? "?run=requirement" : ""}`);
 	}
@@ -90,6 +97,9 @@ export class ConversationClient {
 	}
 	browseDirectory(conversationId: string, path: string): Promise<LocalDirectoryListing> {
 		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/directories?${new URLSearchParams({ path })}`);
+	}
+	async readDocument(conversationId: string, path: string) {
+		return (await request<{ document: import("./assetInspection").AssetInspectionRecord }>(`/api/conversations/${encodeURIComponent(conversationId)}/files/document-content?${new URLSearchParams({ path })}`)).document;
 	}
 	readLocalFile(conversationId: string, path: string): Promise<{ absolutePath: string; content: string; sha256: string }> {
 		return request(`/api/conversations/${encodeURIComponent(conversationId)}/files/local-content?${new URLSearchParams({ path })}`);
@@ -123,8 +133,8 @@ export class ConversationClient {
 		return (await request<{ delivery: RequirementDelivery }>(`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/versions/${version}`)).delivery;
 	}
 
-	async exportDelivery(conversationId: string, version: number, format: "md" | "html" | "json"): Promise<Blob> {
-		const response = await attachmentRequest(`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/versions/${version}?format=${format}`);
+	async exportDelivery(conversationId: string, version: number, format: "md" | "html" | "json", language: Language = "zh"): Promise<Blob> {
+		const response = await attachmentRequest(`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief/versions/${version}?format=${format}&language=${language}`);
 		return response.blob();
 	}
 

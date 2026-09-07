@@ -3,6 +3,7 @@ import type { AgentMessage, AgentModelResponse, AgentToolCall } from "./contract
 export type AgentHookEvent =
 	| { name: "loop.started"; runId: string }
 	| { name: "model.before"; runId: string; iteration: number; attempt: number; messages: readonly AgentMessage[]; estimatedTokens: number }
+	| { name: "model.delta"; runId: string; iteration: number; text: string }
 	| { name: "model.after"; runId: string; iteration: number; response: AgentModelResponse }
 	| { name: "tool.before"; runId: string; iteration: number; call: AgentToolCall }
 	| { name: "tool.after"; runId: string; iteration: number; call: AgentToolCall; failed: boolean }

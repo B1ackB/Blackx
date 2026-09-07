@@ -1,3 +1,4 @@
+import { errorText } from "../i18n";
 import { useEffect, useRef } from "react";
 import type { Language } from "../i18n";
 
@@ -22,7 +23,7 @@ export function DeleteConversationDialog({ title, busy, error, language, onCance
 		<p className="delete-conversation-title">{title}</p>
 		<p id="delete-description">{en ? "The conversation and attachments will leave the workspace. Running and queued tasks will stop, scheduled tasks will pause, and any unfinished requirement brief will be cancelled." : "会话及附件将从工作台移除，正在执行和排队的任务会停止，定时任务会暂停。未完成的需求单会取消。"}</p>
 		<p className="delete-retention">{en ? "You cannot restore it from the interface. Historical messages, attachments, delivery versions, and audit records remain local; this does not physically erase files." : "删除后无法从界面恢复。历史消息、附件、交付版本及审计记录保留在本地，此操作不会物理擦除文件。"}</p>
-		{error && <p className="delete-error" role="alert">{error}</p>}
+		{error && <p className="delete-error" role="alert">{errorText(error, language)}</p>}
 		<div className="delete-dialog-actions">
 			<button autoFocus disabled={busy} onClick={onCancel}>{en ? "Cancel" : "取消"}</button>
 			<button className="danger-action" disabled={busy} onClick={onConfirm}>{busy ? en ? "Deleting…" : "正在删除…" : error ? en ? "Retry delete" : "重试删除" : en ? "Delete conversation" : "确认删除"}</button>

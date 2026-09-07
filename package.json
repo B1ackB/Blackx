@@ -4,7 +4,7 @@
 	"version": "0.1.0",
 	"type": "module",
 	"scripts": {
-		"dev": "tsx server/index.ts",
+		"dev": "node --env-file-if-exists=.env --import tsx server/index.ts",
 		"dev:web": "vite",
 		"build": "tsc -b && vite build",
 		"test": "vitest run",
@@ -18,7 +18,7 @@
 		"check": "npm run test && npm run build",
 		"build:native": "node scripts/build-native.mjs",
 		"predev": "npm run build:native",
-		"test:native": "BLACKX_RUN_SEATBELT_TESTS=1 vitest run server/runtime/macOsSeatbeltSandboxedToolExecutor.test.ts server/runtime/assetInspection.test.ts",
+		"test:native": "BLACKX_RUN_SEATBELT_TESTS=1 vitest run server/runtime/macOsSeatbeltSandboxedToolExecutor.test.ts server/runtime/assetInspection.test.ts server/runtime/documentRead.test.ts",
 		"eval:product": "node --import tsx eval/productSmoke.ts",
 		"dev:fixture": "npm run build:native && node --import tsx eval/productSmoke.ts --serve",
 		"check:local": "npm run check && npm run eval:offline && npm run eval:m1 && npm run eval:m2 && npm run build:native && npm run test:native && npm run eval:product"
@@ -38,5 +38,8 @@
 		"tsx": "4.23.12",
 		"typescript": "^5.8.0",
 		"vitest": "^4.0.0"
+	},
+	"engines": {
+		"node": ">=24.14.0 <25"
 	}
 }
