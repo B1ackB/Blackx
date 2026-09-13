@@ -4,7 +4,7 @@
 
 Packx 是面向**包装企业售前与跟单人员**的本地 Agent 工作台。项目使用自研、行业无关的 Agent Core，通过工作流层管理有来源的事实、版本化需求单、审批和中断恢复。
 
-当前是可以在本机运行、阅读实现的工程原型，尚未达到生产 SaaS 或桌面安装包的交付阶段。产品范围仅限包装行业，代码中的 `print` 标识为兼容已有数据而保留。
+当前是可以在本机运行、阅读实现的工程原型，提供未签名的 macOS 本地发行目录，尚未达到生产 SaaS 或签名桌面安装包的交付阶段。产品范围仅限包装行业，代码中的 `print` 标识为兼容已有数据而保留。
 
 Packx 原名 Blackx。界面和项目名称已更新；现有 `BLACKX_*` 环境变量、`.blackx-data/` 数据目录及内部协议标识继续沿用，已有配置无需迁移。GitHub 仓库地址目前仍为 `B1ackB/Blackx`，历史 ADR 和验证记录保留当时名称。
 
@@ -12,6 +12,7 @@ Packx 原名 Blackx。界面和项目名称已更新；现有 `BLACKX_*` 环境�
 
 ## 可以做什么
 
+- 切换 Plan 模式，先生成版本化计划，明确确认后由最多 4 个独立子 Agent 顺序执行；支持暂停和恢复。详见 [Plan 模式指南](docs/plan-mode.md)。
 - 新建和删除会话，接收流式回复，停止或重试当前执行。
 - 切换中英文界面；已有消息和原始资料保留原文。
 - 上传文档与图片，在 macOS 隔离环境中提取 PDF、DOCX、XLSX 文字。
@@ -99,18 +100,69 @@ npm run dev
 
 免密钥 fixture 使用固定回复序列，任意聊天需要真实 Provider。已审批的需求单也不等于可直接提交生产的印刷文件。
 
-## 如何理解代码
+## 项目架构
 
-```text
-浏览器工作台
-    → 本地 API Host
-        → AgentRuntimePort → Agent Core → Model Provider / 受控工具
-        → Workflow Engine → Fact / Artifact 版本 / Approval / Event
-                                              ↑
-                                     包装领域规则与评测器
+下图对应当前本地实现。实线表示请求与执行方向，虚线表示领域规则和共享基础设施；为便于阅读，省略结果返回路径。
+
+```mermaid
+flowchart TB
+	UI["Packx 工作台 · React<br/>对话 · Plan · 文件 · 审批"]
+
+	subgraph HOST["本地 Host · API 与 Enterprise Layer"]
+		API["本地 API<br/>会话认证 · 访问范围校验 · SSE"]
+		CHAT["直接对话"]
+		PLAN["Plan 工作流<br/>只读规划 · 版本化计划"]
+		CONFIRM{"用户明确确认<br/>当前计划版本"}
+		CHILD["子 Agent 执行<br/>最多 4 项顺序执行 · 独立 Session"]
+		WORKFLOW["业务工作流<br/>事实 · Artifact 版本 · 评测 · 审批"]
+		JOBS["共享任务队列与调度器<br/>检查点 · 暂停 · 恢复 · 取消"]
+		API --> CHAT
+		API --> PLAN
+		API --> WORKFLOW
+		PLAN --> CONFIRM
+		CONFIRM -->|已确认| CHILD
+		PLAN -.-> JOBS
+		CHILD -.-> JOBS
+		WORKFLOW -.-> JOBS
+	end
+
+	DOMAIN["包装领域<br/>需求单 · Schema · 业务规则与评测器"]
+	PORT["AgentRuntimePort<br/>统一执行契约"]
+	CORE["行业无关的 Agent Core<br/>Agent Loop · Context / Compact · Skill / Hook · 工具协议"]
+	MODEL["模型 Provider Adapter<br/>Anthropic 兼容端点 / 离线 fixture"]
+	TOOLS["受控工具 Adapter<br/>文件策略 · 逐次写入审批 · 审计"]
+	NATIVE["原生文档读取器<br/>PDF / DOCX / XLSX · macOS 沙箱"]
+	STORE[("本地持久化<br/>会话 / Trace · 计划事件 / 子任务结果<br/>工作流事件 / Artifact · 任务 / 检查点")]
+
+	UI --> API
+	DOMAIN -.-> WORKFLOW
+	CHAT --> PORT
+	PLAN -->|只读规划执行| PORT
+	CHILD -->|用户导入结果| WORKFLOW
+	CHILD -->|每项任务独立会话| PORT
+	WORKFLOW -->|阶段 Worker| PORT
+	PORT --> CORE
+	CORE --> MODEL
+	CORE --> TOOLS
+	TOOLS --> NATIVE
+	HOST -.-> STORE
+	CORE -.-> STORE
+
+	classDef entry fill:#dbeafe,stroke:#2563eb,color:#172554
+	classDef orchestration fill:#eef2ff,stroke:#6366f1,color:#312e81
+	classDef gate fill:#fef3c7,stroke:#d97706,color:#78350f
+	classDef runtime fill:#dcfce7,stroke:#16a34a,color:#14532d
+	classDef infrastructure fill:#f1f5f9,stroke:#64748b,color:#0f172a
+	class UI,API entry
+	class CHAT,PLAN,CHILD,WORKFLOW orchestration
+	class CONFIRM gate
+	class PORT,CORE runtime
+	class DOMAIN,JOBS,MODEL,TOOLS,NATIVE,STORE infrastructure
 ```
 
-Agent 在阶段内选择行动；权限、工作流状态转换、验证和完成判定由 Host 掌握。模型结束回复并不代表业务流程完成。
+Host 负责计划确认、子 Agent 派发、权限、工作流状态转换、验证和完成判定。各条执行路径复用同一个 Runtime，包装规则保留在 Core 之外。子 Agent 上下文独立，文件权限范围沿用父会话；确认计划不会同时批准文件写入或业务交付。模型结束回复并不代表业务流程完成。
+
+执行限制与恢复行为见 [Plan 模式指南](docs/plan-mode.md) 和 [ADR-0015](docs/adr/0015-confirmed-plans-and-bounded-subagents.md)。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -127,6 +179,8 @@ Agent 在阶段内选择行动；权限、工作流状态转换、验证和完�
 
 建议先读[架构原则](docs/architecture/principles.md)，再沿一个功能从 UI 跟到 API 和 Runtime。修改实现或架构前阅读 [AGENTS.md](AGENTS.md)。深入设计文档目前主要为中文，两份 README 均覆盖完整上手流程。
 
+本次补全范围与状态见[本地产品工作单](docs/local-product-completion.md)。启动诊断、备份和恢复见[本地操作指南](docs/local-operations.md)，可从明确标注的[模拟咖啡袋任务](examples/coffee-pouch-intake.md)体验交接流程；真实用户验证仍待补。
+
 ## 验证命令
 
 | 命令 | 用途 | 需要外部模型？ |
@@ -135,6 +189,7 @@ Agent 在阶段内选择行动；权限、工作流状态转换、验证和完�
 | `npm run eval:offline` | 固定离线 Harness 评测 | 否 |
 | `npm run eval:m1` | M1 工作流评测 | 否 |
 | `npm run eval:m2` | 包装需求单评测 | 否 |
+| `npm run eval:plan` | 固定 Plan 确认与子 Agent 基线 | 否 |
 | `npm run build:native` | 编译 macOS 读取器 | 否 |
 | `npm run test:native` | 真实 macOS 沙箱与文档测试 | 否 |
 | `npm run eval:product` | 本地 Provider/API/工作流冒烟检查，结束后自动清理 | 否 |
@@ -152,7 +207,7 @@ Agent 在阶段内选择行动；权限、工作流状态转换、验证和完�
 - **删除语义：**删除会话会取消工作区访问并停止关联任务，历史数据保留用于审计，不是安全擦除。删除本地文件会在审批后移除原文件，并保留受管理的备份。
 - **文档能力：**PDF 只提取现有文字，不含 OCR；DOCX 读取段落和表格；XLSX 读取工作表/单元格值，不重新计算公式。不支持旧 `.doc`/`.xls` 或加密文档。解析有上限：文件最大 10 MiB，PDF 最多 100 页/8,000 个 Swift 字符，DOCX/XLSX 最多 24,000 个字符，XLSX 最多 20 个工作表/每表 500 行；截断会明确标记。
 - **可观测性：**Token/缓存统计来自 Provider 实际返回的字段，有保留窗口和覆盖率限制，不补造缺失数据。fixture 数值不能当作性能或账单证据。
-- **部署边界：**Host 监听回环地址，使用本地会话和 Host/Origin 检查；尚未提供多用户登录系统，也不能证明生产多租户隔离。原生资源控制和部署加固仍有待完成。
+- **部署边界：**Host 监听回环地址，使用本地会话和 Host/Origin 检查；尚未提供多用户登录系统，也不能证明生产多租户隔离。固定解析器已有资源预算和崩溃清理；任意代码通用隔离与企业部署加固仍待验证。
 - **验证边界：**离线测试、原生沙箱检查、本地产品验证分别记录，不等于真实 Provider 或真实用户验收。已实现范围和待完成事项见 [2026-09-07 功能证据](docs/evidence/streaming-bilingual-documents-2026-09-07.md)、[流式与文档 ADR](docs/adr/0014-streaming-and-document-sources.md) 及[路线图](docs/roadmap.md)。
 
 ## 常见问题
@@ -171,3 +226,7 @@ Agent 在阶段内选择行动；权限、工作流状态转换、验证和完�
 ## 许可证
 
 [MIT](LICENSE)。第三方依赖及其审计见 [docs/dependencies.md](docs/dependencies.md)。参考仓库不作为生产源码依赖。
+
+### 本地发行与配置
+
+执行 `npm run release`，在 `releases/` 生成 macOS 发行目录、压缩包和摘要。打开目录中的 `Packx.command`；需要 Node 24.14+（24.x），首次启动安装锁定依赖。侧栏点击**配置模型**，保存连接后重启；任务可以重命名，并按名称和 Plan 目标搜索。详见[发行指南](docs/release-start.md)和[本地操作](docs/local-operations.md)。当前发行物未签名，干净设备和企业部署验证保持待补。

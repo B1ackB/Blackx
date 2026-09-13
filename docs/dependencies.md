@@ -14,3 +14,7 @@ sha512-HnslJfsZkRPBDJRHvVtAaWlZHEpSu7u8LgQuJCELjRKuWR+hpq4A7sLq3p8HaI9ypVoXDXxV3
 ```
 
 Swift 解析器与 PDF 测试文件均独立编写，没有使用 `temp/claude-code-best/` 源码，也没有新增 Codex/Claude Code 运行时依赖。
+
+## 2026-09-13 本地发行补充
+
+独立编写的 `native/ToolSupervisor.c` 使用 macOS 系统 libc/libproc、setrlimit 和进程组能力，由 Command Line Tools 编译；不分发 Apple SDK、框架或 Node 运行时。发行物首次安装沿用 `package-lock.json` 中的既有依赖与包内许可证（`npm ci --ignore-scripts`）；未增加第三方依赖，不将本记录视为历史依赖的完整供应链审计。

@@ -23,6 +23,8 @@ export interface ConversationMessage {
 }
 
 export interface ConversationView {
+	nameRevision?: number;
+	searchText?: string;
 	conversationId: string;
 	title: string;
 	preview: string;

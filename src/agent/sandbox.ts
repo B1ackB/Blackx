@@ -48,6 +48,9 @@ export interface ToolExecutionManifest {
 	};
 	readonly limits: {
 		readonly timeoutMs: number;
+		readonly maxCpuSeconds?: number;
+		readonly maxMemoryBytes?: number;
+		readonly maxProcesses?: number;
 		readonly maxStdoutBytes: number;
 		readonly maxStderrBytes: number;
 		readonly maxOutputFiles: number;
@@ -182,6 +185,7 @@ export function validToolExecutionManifest(manifest: ToolExecutionManifest): boo
 			domain.trim() === domain && domain.length > 0 && !domain.includes(":") && !domain.includes("/")
 		) &&
 		positiveInteger(manifest.limits.timeoutMs) &&
+		[manifest.limits.maxCpuSeconds, manifest.limits.maxMemoryBytes, manifest.limits.maxProcesses].every((v) => v === undefined || positiveInteger(v)) &&
 		positiveInteger(manifest.limits.maxStdoutBytes) &&
 		positiveInteger(manifest.limits.maxStderrBytes) &&
 		nonNegativeInteger(manifest.limits.maxOutputFiles) &&

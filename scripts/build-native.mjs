@@ -20,3 +20,11 @@ if (!existsSync(output) || Math.max(statSync(source).mtimeMs, statSync(office).m
 	}
 }
 console.log("Native asset inspector ready.");
+
+const supervisorSource = resolve("native/ToolSupervisor.c");
+const supervisorOutput = resolve(".blackx-tools/tool-supervisor");
+if (!existsSync(supervisorOutput) || statSync(supervisorSource).mtimeMs > statSync(supervisorOutput).mtimeMs) {
+	const built = spawnSync("/usr/bin/xcrun", ["clang", "-Wall", "-Wextra", "-Werror", "-O2", supervisorSource, "-o", supervisorOutput], { stdio: "inherit", shell: false });
+	if (built.error || built.status !== 0) process.exit(1);
+}
+console.log("Native resource supervisor ready.");

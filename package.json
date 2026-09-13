@@ -5,6 +5,9 @@
 	"type": "module",
 	"scripts": {
 		"dev": "node --env-file-if-exists=.env --import tsx server/index.ts",
+		"start": "npm run dev",
+		"doctor": "node --env-file-if-exists=.env --import tsx scripts/doctor.ts",
+		"state": "node --env-file-if-exists=.env --import tsx scripts/local-state.ts",
 		"dev:web": "vite",
 		"build": "tsc -b && vite build",
 		"test": "vitest run",
@@ -13,6 +16,7 @@
 		"eval:online": "node --import tsx eval/run.ts --online",
 		"eval:m1": "node --import tsx eval/m1Research.ts",
 		"eval:m1-online": "node --import tsx eval/m1Research.ts --online",
+		"eval:plan": "node --import tsx eval/planSubagents.ts",
 		"eval:m2": "node --import tsx eval/m2RequirementBrief.ts",
 		"eval:anthropic-contract": "node --import tsx eval/anthropicContract.ts",
 		"check": "npm run test && npm run build",
@@ -21,7 +25,10 @@
 		"test:native": "BLACKX_RUN_SEATBELT_TESTS=1 vitest run server/runtime/macOsSeatbeltSandboxedToolExecutor.test.ts server/runtime/assetInspection.test.ts server/runtime/documentRead.test.ts",
 		"eval:product": "node --import tsx eval/productSmoke.ts",
 		"dev:fixture": "npm run build:native && node --import tsx eval/productSmoke.ts --serve",
-		"check:local": "npm run check && npm run eval:offline && npm run eval:m1 && npm run eval:m2 && npm run build:native && npm run test:native && npm run eval:product"
+		"check:local": "npm run check && npm run eval:offline && npm run eval:m1 && npm run eval:m2 && npm run eval:plan && npm run build:native && npm run test:native && npm run eval:product",
+		"release": "npm run build && npm run build:native && node scripts/build-release.mjs",
+		"start:release": "node scripts/launch.mjs",
+		"eval:release": "node --import tsx eval/releaseSmoke.ts"
 	},
 	"dependencies": {
 		"@vitejs/plugin-react": "^5.0.0",

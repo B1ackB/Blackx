@@ -5,7 +5,7 @@ import type { ArtifactContentStore } from "../../src/enterprise/artifactStore";
 import { ArtifactStoreError } from "../../src/enterprise/artifactStore";
 import type { ProposalRunState } from "../../src/enterprise/contracts";
 import { ProposalRunEngine } from "../../src/enterprise/proposalRunEngine";
-import { requiredRequirementFacts } from "../../src/manufacturing/requirementBrief";
+import { requiredRequirementFacts, packagingFactKeys } from "../../src/manufacturing/requirementBrief";
 import type {
 	ConversationSummary,
 	ConversationView,
@@ -23,6 +23,9 @@ import { ConversationApiController } from "../runtime/conversationApi";
 import { FileConversationAttachmentStore } from "../runtime/conversationAttachments";
 import { StageJobOutbox } from "../workers/stageJobOutbox";
 import { StageJobScheduler } from "../workers/stageJobScheduler";
+import type { PlanScope, PlanWorkspace } from "../../src/enterprise/agentPlan";
+import { planRequirementSource } from "./planRequirementSource";
+import type { ArtifactWorkspaceStartFact } from "../enterprise/proposalWorkspaceApi";
 
 function industryFact(payload: unknown, _conversation: ConversationView) {
 	if (
@@ -52,6 +55,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 		private readonly requirementScheduler: StageJobScheduler,
 		attachments?: FileConversationAttachmentStore,
 		private readonly now: () => string = () => new Date().toISOString(),
+		readPlan?: (scope: PlanScope) => PlanWorkspace,
 	) {
 		super(conversations, requirementEngine, requirementArtifacts, outbox, requirementScheduler, {
 			responseKey: "requirementBrief",
@@ -61,33 +65,44 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 			stageId: "requirement-brief",
 			jobPrefix: "requirement",
 			evaluationArtifactId: "requirement-brief-evaluation",
-			protectedFactKeys: ["industry", "customer_brief", "customer_attachments"],
+			protectedFactKeys: ["industry", "customer_brief", "customer_attachments", "plan_source"],
 			assertWritable: (state) => {
 				if (state.aggregateVersion > 0 && state.facts.industry?.value !== "print") throw new ProposalWorkspaceValidationError("历史非包装需求已停用，请新建包装会话；原始资料与交付版本保留。");
 			},
-			startFacts: (payload, conversation, scope) => {
-				const facts = industryFact(payload, conversation);
+			prepareStart: (payload, conversation, scope) => {
+				const facts: ArtifactWorkspaceStartFact[] = industryFact(payload, conversation);
 				const attachmentScope = {
 					tenantId: scope.tenantId,
 					workspaceId: scope.workspaceId,
 					conversationId: conversation.conversationId,
 				};
 				const digest = attachments?.digest(attachmentScope);
-				if (!digest) return facts;
-				return [...facts, {
+				const planVersion = (payload as { planVersion?: unknown }).planVersion;
+				let brief: string | undefined;
+				if (planVersion !== undefined) {
+					if (!readPlan) throw new ProposalWorkspaceValidationError("计划来源不可用。");
+					const imported = planRequirementSource(readPlan({ ...scope, runId: conversation.conversationId }), planVersion, conversation,
+						attachments?.list(attachmentScope).slice(-8).map(({ name, sourceRef, sha256 }) => ({ name, sourceRef, sha256 })) ?? []);
+					brief = imported.brief;
+					facts.push(imported.source);
+				} else if (this.requirementEngine.load(scope).facts.plan_source) {
+					throw new ProposalWorkspaceValidationError("此需求单来自计划，请通过计划导入入口更新来源，或直接核对现有字段。", "plan_source_required");
+				}
+				if (digest) facts.push({
 					key: "customer_attachments",
 					value: digest,
 					status: "unverified" as const,
 					sourceType: "source_document" as const,
 					sourceRef: `conversation:${conversation.conversationId}:attachments:${digest}`,
-				}];
+				});
+				return { facts, brief, ...(brief ? { briefSourceType: "model_output" as const } : {}) };
 			},
 		});
 	}
 
 	override recordFact(context: Parameters<ConversationApiController["get"]>[0], conversationId: unknown, payload: unknown) {
 		if (payload && typeof payload === "object" && "key" in payload &&
-			!requiredRequirementFacts.print.includes(String(payload.key))) {
+			!packagingFactKeys.includes(String(payload.key))) {
 			return { status: 400, body: { code: "invalid_requirement_brief_request", message: "只能补充当前包装需求的标准字段。" } };
 		}
 		return super.recordFact(context, conversationId, payload);
@@ -106,6 +121,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 			const created = events.find((event) => event.data.type === "artifact.version_created" && event.data.artifactId === artifact.artifactId && event.data.artifactVersion === version);
 			const checkpoint = this.readCheckpointMetrics(state, version);
 			const brief = content as RequirementBriefV1;
+			const sourcePlan = artifact.inputFactVersions.plan_source === undefined ? undefined : events.find((event) => event.data.type === "fact.version_recorded" && event.data.factKey === "plan_source" && event.data.factVersion === artifact.inputFactVersions.plan_source);
 			const citations: Record<string, string> = {};
 			for (const fact of brief.facts) {
 				const original = events.findLast((event) => event.data.type === "fact.version_recorded" && event.data.factKey === fact.key && event.data.factVersion <= fact.version && event.data.value === fact.value && event.data.unit === fact.unit && event.data.sourceType === "model_output");
@@ -116,6 +132,7 @@ export class RequirementBriefWorkspaceApiController extends ProposalWorkspaceApi
 				schemaVersion: "requirement-delivery.v1", runId: scope.runId, version,
 				status: artifact.freshness === "stale" || state.currentProposal?.version !== version ? "stale" : approved ? "approved" : "draft",
 				createdAt: created?.occurredAt ?? "", content: brief, sources: checkpoint?.inspections ?? [], citations,
+				...(sourcePlan?.data.type === "fact.version_recorded" ? { sourcePlan: sourcePlan.data.sourceRef } : {}),
 				...(approved ? { approval: { approvalId: state.approval!.approvalId, artifactVersion: version } } : {}),
 			};
 			return { status: 200, body: { delivery } };

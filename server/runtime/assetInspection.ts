@@ -1,5 +1,6 @@
+import { processIsGone } from "../localData";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { AgentSandboxedTool, AgentToolExecutionContext } from "../../src/agent/contracts";
 import type { SandboxedToolExecutorPort, ToolExecutionManifest, ToolExecutionResult } from "../../src/agent/sandbox";
@@ -23,11 +24,7 @@ export class AssetInspectionService implements SandboxedToolExecutorPort {
 		cacheDirectory = join(workspaceRoot, ".blackx-data", "inspection-cache"),
 	) {
 		this.cache = new FileArtifactContentStore(cacheDirectory);
-		// Keep recent directories for another live Host; only reap staging directories older than one day.
-		const root = join(workspaceRoot, ".blackx-tool-inputs");
-		if (existsSync(root) && !lstatSync(root).isSymbolicLink()) for (const entry of readdirSync(root, { withFileTypes: true })) {
-			if (entry.isDirectory() && /^[A-Za-z0-9-]+$/.test(entry.name) && Date.now() - statSync(join(root, entry.name)).mtimeMs > 86_400_000) rmSync(join(root, entry.name), { recursive: true, force: true });
-		}
+		reapAbandonedInputs(join(workspaceRoot, ".blackx-tool-inputs"));
 	}
 
 	scope(run: { tenantId: string; workspaceId: string; runId: string }): ConversationAttachmentScope {
@@ -77,7 +74,10 @@ export class AssetInspectionService implements SandboxedToolExecutorPort {
 				const directory = join(inputRoot, context.sandboxAttemptId);
 				mkdirSync(directory, { mode: 0o700 });
 				const path = join(directory, "input.bin");
-				writeFileSync(path, content, { flag: "wx", mode: 0o400 });
+				try {
+					writeFileSync(join(directory, ".owner.json"), JSON.stringify({ pid: process.pid }), { flag: "wx", mode: 0o600 });
+					writeFileSync(path, content, { flag: "wx", mode: 0o400 });
+				} catch (error) { rmSync(directory, { recursive: true, force: true }); throw error; }
 				this.inputs.set(context.sandboxAttemptId, { directory, run: { tenantId: context.tenantId, workspaceId: context.workspaceId, runId: context.runId }, record: {
 					attachmentId: attachment.attachmentId, name: attachment.name, sha256: attachment.sha256,
 					sourceRef: attachment.sourceRef, parserVersion: "1.1.0",
@@ -131,4 +131,24 @@ export class AssetInspectionService implements SandboxedToolExecutorPort {
 
 export function inspectionArtifactId(attachmentId: string): string {
 	return `asset-inspection-${createHash("sha256").update(attachmentId).digest("hex").slice(0, 24)}`;
+}
+
+export function reapAbandonedInputs(root: string) {
+	if (!existsSync(root)) return;
+	if (lstatSync(root).isSymbolicLink()) throw new Error("unsafe_staging_root");
+	for (const entry of readdirSync(root, { withFileTypes: true })) {
+		if (!entry.isDirectory() || !/^[A-Za-z0-9-]+$/.test(entry.name)) continue;
+		const directory = join(root, entry.name);
+		const owner = join(directory, ".owner.json");
+		if (existsSync(owner)) {
+			const stat = lstatSync(owner);
+			if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024) continue;
+			let pid: number;
+			try { pid = JSON.parse(readFileSync(owner, "utf8")).pid; } catch { continue; }
+			if (processIsGone(pid)) rmSync(directory, { recursive: true, force: true });
+		} else if (Date.now() - statSync(directory).mtimeMs > 86_400_000) {
+			// Compatibility cleanup for old releases whose native jobs were limited to 15 seconds.
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}
 }

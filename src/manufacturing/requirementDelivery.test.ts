@@ -7,6 +7,12 @@ function fixture(): RequirementDelivery {
 }
 
 describe("requirement delivery", () => {
+	it("exports plan provenance without interpreting reported text as HTML", () => {
+		const delivery = { ...fixture(), sourcePlan: "plan:a:version:1<script>" };
+		expect(deliveryMarkdown(delivery)).toContain("plan:a:version:1&lt;script&gt;");
+		expect(deliveryHtml(delivery)).toContain("plan:a:version:1&lt;script&gt;");
+		expect(deliveryHtml(delivery)).not.toContain("<script>");
+	});
 	it("escapes source HTML and labels drafts and outdated versions explicitly", () => {
 		const delivery = fixture();
 		expect(deliveryHtml(delivery)).not.toContain("<script>");

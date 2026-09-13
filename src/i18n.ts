@@ -15,6 +15,8 @@ export const fieldLabels: Record<Language, Record<string, string>> = {
 		target_delivery: "Target delivery date",
 		delivery_location: "Delivery location",
 		artwork_status: "Artwork status",
+		material_structure: "Material structure", material_thickness: "Material thickness (with unit)", printing_process: "Printing process",
+		surface_finish: "Surface finish", closure_type: "Closure type", valve_requirement: "Valve requirement",
 	},
 };
 
@@ -32,6 +34,20 @@ export function statusFor(language: Language, key: string, fallback: string): st
 }
 
 const errors: Record<string, [string, string]> = {
+	plan_source_not_ready: ["请选择已完成的最新计划版本，再导入需求单。", "Select the latest completed plan before creating a requirement draft."],
+	plan_source_stale: ["会话或附件已变化，请重新规划后导入需求单。", "The conversation or attachments changed. Create a new plan before importing."],
+	plan_source_too_large: ["计划资料超过需求单输入上限，请拆分为较小任务。", "The plan source is too large. Split it into smaller tasks."],
+	plan_source_required: ["此需求单来自计划，请使用计划导入入口更新来源。", "Use the plan import action to update this requirement source."],
+	plan_mode_requires_plan_action: ["当前为 Plan 模式，请生成计划并确认具体版本，或切换直接执行。", "Generate and confirm a plan, or switch to Direct execution."],
+	plan_revision_conflict: ["计划状态已更新，请查看最新状态后重试。", "The plan changed. Review its latest state and retry."],
+	plan_sources_changed: ["会话或附件已变化，请重新生成计划并确认。", "The conversation or attachments changed. Generate and confirm a new plan."],
+	plan_confirmation_required: ["请先确认当前版本的计划。", "Explicitly confirm the current plan version first."],
+	plan_version_conflict: ["计划版本已变化，请确认最新版本。", "The plan version changed. Review the latest version."],
+	pause_plan_before_switching: ["请先暂停当前计划，再切换模式。", "Pause the running plan before switching modes."],
+	plan_not_ready: ["当前计划尚在执行，请暂停或等待完成。", "The current plan is running. Pause it or wait for completion."],
+	plan_budget_exceeded: ["本计划已达到执行预算，请核对已有结果并重新规划。", "This plan reached its execution budget. Review results and create a new plan."],
+	plan_requires_revision: ["此次失败需要修改计划后重新确认。", "Revise and confirm a new plan to resolve this failure."],
+	plan_unavailable: ["计划服务暂时不可用，请稍后重试。", "The plan service is unavailable. Please retry later."],
 	runtime_unavailable: ["无法连接 Packx 服务端，请检查服务是否启动。", "Cannot connect to Packx. Check that the server is running."],
 	real_provider_required: ["请先配置并启动实际模型服务。", "Configure and start a live model service first."],
 	local_access_denied: ["本地会话校验失败，请使用服务端显示的本机地址。", "Local session verification failed. Use the local address shown by the server."],

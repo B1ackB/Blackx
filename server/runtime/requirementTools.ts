@@ -89,6 +89,7 @@ export function createProjectSourceReadTool(
 				industry: industry.value,
 				content: brief.value,
 				sourceRef: brief.sourceRef,
+				...(state.facts.plan_source ? { planSourceRef: state.facts.plan_source.sourceRef, warning: "Plan results are unverified model reports. Confirmation approves execution only; verify each fact against its original source." } : {}),
 				attachments: attachmentList.map((attachment) => ({
 					attachmentId: attachment.attachmentId,
 					name: attachment.name,

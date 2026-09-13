@@ -219,7 +219,8 @@ G2 至少使用一个固定测试 executable 验证：
 - [x] Sandbox 不可用、Workspace/真实路径越界、权限路径符号链接或临时目录冲突时 fail-closed，并提供结构化终止原因。
 - [x] 本机攻击回归已覆盖允许输入、未声明读写、环境 Secret 不继承、localhost 断网、符号链接、硬链接、输出 Digest、stdout 超限、超时、用户取消和子进程组清理。运行命令：`BLACKX_RUN_SEATBELT_TESTS=1 npx vitest run server/runtime/macOsSeatbeltSandboxedToolExecutor.test.ts`。
 - [ ] 增加 Sandbox 外 Host Proxy 后支持域名 allowlist；当前请求会返回 `sandbox_unavailable`，不会降级为直接联网。
-- [ ] 增加进程数、CPU/内存边界、Fork Bomb 与 Host Crash 后孤儿清理回归；完成全部 G2 证据前仍不得把本 Slice 或 G2 标记为完成。
+- [x] 固定解析器增加 CPU/文件大小/描述符内核限制，RSS/进程数采样边界，以及 Host SIGKILL 后进程组清理回归（2026-09-13，见 ADR-0017）。
+- [ ] 通用任意代码、脱离进程组的 Fork Bomb、Supervisor 自身故障及全部 G2 对抗场景仍待验证；不把采样限制等同于内核内存配额。
 
 ### Slice 3：M2 正式纵向切片
 
@@ -227,11 +228,13 @@ G2 至少使用一个固定测试 executable 验证：
 - [x] Queue → Worker → Agent Loop → Seatbelt PDFKit → Artifact → 版本导出实测通过。
 - [x] Checkpoint 后中断恢复不重复调用模型/解析器；lease 丢失立即取消，迟到结果不提交。
 - [x] 本机访问凭据、实际工具进度、停止/重试、附件来源和 UI 权限说明。
-- [ ] 补齐全部五类 Crash、跨分片资料矩阵、Host 硬崩溃孤儿进程清理和通用资源限制；不把现有切片提升为完整 G3。
+- [ ] 补齐全部五类 Crash、跨分片资料矩阵和任意代码通用资源隔离；固定解析器的 Host SIGKILL 清理与资源预算已有本轮回归；不把现有切片提升为完整 G3。
 
 本次证据见[本地产品切片验收](evidence/local-product-slice-2026-09-05.md)。
 
 ### Slice 4：本地发行 Gate
+
+2026-09-13 已提供图形配置、本地发行目录和启动器、任务名称与检索、备份恢复、版本拒绝与回退指南；本机重定位/重启通过，详见[本轮工程证据](evidence/local-product-completion-2026-09-13.md)。以下完整发行 Gate 继续开放：
 
 - 在干净 macOS 用户环境验证安装、升级、卸载、权限提示和 Sandbox 诊断。
 - 实现 G1、G4、G5 的最小本地产品闭环。
