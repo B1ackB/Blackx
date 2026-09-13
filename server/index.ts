@@ -1008,7 +1008,7 @@ server.listen(port, "127.0.0.1", () => {
 	stopStageJobScheduler = stageJobScheduler.start();
   void runtime.health().then((health) => {
     console.log(
-      `Blackx listening on http://127.0.0.1:${port} (${health.adapter})`,
+      `Packx listening on http://127.0.0.1:${port} (${health.adapter})`,
     );
   });
 });

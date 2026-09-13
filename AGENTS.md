@@ -1,14 +1,14 @@
-# Blackx 开发优先级约束
+# Packx 开发优先级约束
 
 本文件约束所有在本仓库中工作的开发者和 Coding Agent。开始设计、实现、重构或评审前必须先阅读本文件。
 
-Blackx 的产品目标是以自研 Agent Core 构建面向企业的多模态长任务 Agent 产品。当前产品范围仅限包装行业，服务包装企业的售前与跟单人员，不提供家具行业入口或工作流；底层分层保持行业无关。范围调整见 [`ADR-0010`](docs/adr/0010-packaging-product-focus.md)。
+Packx 的产品目标是以自研 Agent Core 构建面向企业的多模态长任务 Agent 产品。当前产品范围仅限包装行业，服务包装企业的售前与跟单人员，不提供家具行业入口或工作流；底层分层保持行业无关。范围调整见 [`ADR-0010`](docs/adr/0010-packaging-product-focus.md)。
 
-- `Blackx Agent Core` 提供 Agent Loop、Model Provider、Hook、Tool、Session、Context、Skill 与 Compact 等行业无关能力。
-- `Blackx Enterprise Layer` 提供 Durable Workflow、Artifact、Approval、Evaluation、Policy、Event Store、Tenant 与 Audit 等企业能力。
-- `Blackx Print` 是已存在的印刷行业 Domain Pack 和回归资产，负责印刷方案、包装视觉、印前文件和质量检查，但不定义通用 M1/M2 的完成条件。
+- `Packx Agent Core` 提供 Agent Loop、Model Provider、Hook、Tool、Session、Context、Skill 与 Compact 等行业无关能力。
+- `Packx Enterprise Layer` 提供 Durable Workflow、Artifact、Approval、Evaluation、Policy、Event Store、Tenant 与 Audit 等企业能力。
+- `Packx Print` 是已存在的印刷行业 Domain Pack 和回归资产，负责印刷方案、包装视觉、印前文件和质量检查，但不定义通用 M1/M2 的完成条件。
 
-Blackx 自研最小 Agent Core，但不重复实现模型 Provider、存储和平台已经可靠提供的通用能力。Core 保持行业无关，印刷规则只能通过 Enterprise Layer 与 Domain Pack 接入。
+Packx 自研最小 Agent Core，但不重复实现模型 Provider、存储和平台已经可靠提供的通用能力。Core 保持行业无关，印刷规则只能通过 Enterprise Layer 与 Domain Pack 接入。
 
 详细原则见 [`docs/architecture/principles.md`](docs/architecture/principles.md)。
 
@@ -56,7 +56,7 @@ Blackx 自研最小 Agent Core，但不重复实现模型 Provider、存储和�
 - 外部 Harness 仓库只作为行为、测试和失败场景参考；不得成为未审计的生产源码来源。
 - 引入 SDK、CLI、协议库或源码前必须固定版本、记录许可证，并进入依赖清单和供应链审计。
 - `temp/claude-code-best/` 仅用于架构学习、行为参考和失败场景研究。
-- 禁止直接复制、改写后复制或以其逆向/反编译源码作为 Blackx 的生产实现基础。
+- 禁止直接复制、改写后复制或以其逆向/反编译源码作为 Packx 的生产实现基础。
 - 从外部 Harness 获取的设计启发必须采用 clean-room 方式独立实现。
 - 引入依赖前必须确认许可证、来源、商业使用限制和数据政策。
 
@@ -70,8 +70,8 @@ Blackx 自研最小 Agent Core，但不重复实现模型 Provider、存储和�
 
 ### P1.2 Agent Core、Enterprise Layer 与 Domain Pack 严格分离
 
-- Blackx Agent Core 只提供行业无关的 Harness 能力；不得出现 Blackx Workflow、Artifact 或租户业务规则。
-- Blackx Enterprise Layer 不得出现 PDF/X、刀模、印刷工艺、ICC Profile、印刷报价公式等行业逻辑。
+- Packx Agent Core 只提供行业无关的 Harness 能力；不得出现 Packx Workflow、Artifact 或租户业务规则。
+- Packx Enterprise Layer 不得出现 PDF/X、刀模、印刷工艺、ICC Profile、印刷报价公式等行业逻辑。
 - Print Domain Pack 通过公开的 Domain SDK 注册 Schema、Workflow、Tool、Skill、Evaluator、Policy 和 Artifact Type。
 - 新行业不得通过修改 Agent Core 或 Enterprise Layer 中的印刷条件分支接入。
 
@@ -86,14 +86,14 @@ Blackx 自研最小 Agent Core，但不重复实现模型 Provider、存储和�
 - `RunEngine` 负责项目、阶段、审批、恢复、预算和完成判定。
 - Agent Runtime 负责一次阶段执行中的 Session、Turn、模型与工具循环。
 - Agent Session 的开始、继续或恢复不得直接等价为 Run 或 Stage 状态转换。
-- Blackx 必须通过 `AgentRuntimePort` 调用自研 Core；Domain Pack 不得直接依赖模型厂商消息类型。
+- Packx 必须通过 `AgentRuntimePort` 调用自研 Core；Domain Pack 不得直接依赖模型厂商消息类型。
 - Context、Tool、Workflow、Artifact、Approval、Evaluation 与 Event Store 必须保持独立职责。
 - 禁止继续构造承担所有职责的超大 `QueryEngine` 或全局上下文对象。
 
 ### P1.5 外部能力必须通过 Port/Adapter
 
 - Agent Runtime、模型、图片、浏览器、PDF、存储、队列、可观测性和企业系统必须通过稳定接口接入。
-- Domain 与 Blackx Enterprise Layer 不得直接依赖某个模型厂商的消息类型。
+- Domain 与 Packx Enterprise Layer 不得直接依赖某个模型厂商的消息类型。
 - 每个外部 Port 必须存在可用于离线测试的 Fake 实现。
 
 ### P1.6 显式状态机与事件
@@ -123,7 +123,7 @@ Agent Core 能力扩展必须按以下顺序评估：
 
 1. 删除需求或使用现有标准库。
 2. 配置、Instructions、Skill 或 Tool。
-3. Blackx Port/Adapter、Hook、Context Provider 或 Tool Policy。
+3. Packx Port/Adapter、Hook、Context Provider 或 Tool Policy。
 4. 固定版本的外部 Provider/协议能力。
 5. 带 ADR 的通用 Agent Core 扩展。
 
@@ -240,7 +240,7 @@ Agent Core 能力扩展必须按以下顺序评估：
 
 每次实现或修改功能时依次执行：
 
-1. 判断能力属于 Agent Core、Blackx Enterprise Layer 还是 Domain Pack。
+1. 判断能力属于 Agent Core、Packx Enterprise Layer 还是 Domain Pack。
 2. 明确业务问题、输入、输出和完成证据。
 3. 按 P1.9 选择最小 Core、配置、Skill、Hook 或 Adapter 落点。
 4. 检查权威 Schema、状态机和依赖关系。

@@ -50,7 +50,7 @@ async function request<Value>(path: string, init?: RequestInit): Promise<Value> 
 			},
 		});
 	} catch (error) {
-		throw new ConversationClientError("runtime_unavailable", "无法连接 Blackx 服务端");
+		throw new ConversationClientError("runtime_unavailable", "无法连接 Packx 服务端");
 	}
 	if (!response.ok) {
 		const payload = await response.json().catch(() => ({})) as ErrorPayload;
@@ -70,7 +70,7 @@ async function attachmentRequest(path: string, init?: RequestInit): Promise<Resp
 			headers: { ...await accessHeaders(), ...init?.headers },
 		});
 	} catch {
-		throw new ConversationClientError("runtime_unavailable", "无法连接 Blackx 服务端");
+		throw new ConversationClientError("runtime_unavailable", "无法连接 Packx 服务端");
 	}
 	if (!response.ok) {
 		const payload = await response.json().catch(() => ({})) as ErrorPayload;

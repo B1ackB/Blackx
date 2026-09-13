@@ -114,7 +114,7 @@ Evaluator 的 `passed` 表示 Artifact 内部一致；只有不存在缺失字�
 npm run eval:m2
 ```
 
-该 Baseline 已冻结 Product Contract 和 Deterministic Evaluator。10 个固定任务现在全部使用文件 Event Store、Transactional Outbox、文件 Queue、正式 `RequirementBriefWorker`、真实 Blackx Agent Loop、租户 Source Tool、文件 Artifact Store、Evaluation 和版本 Approval Gate；不再存在另一套 Fixture Worker 状态机。4 个完整任务批准具体 Artifact v1 后进入 `passed`，6 个有缺口或待确认任务由同一 Gate 停在 `needs_input`。
+该 Baseline 已冻结 Product Contract 和 Deterministic Evaluator。10 个固定任务现在全部使用文件 Event Store、Transactional Outbox、文件 Queue、正式 `RequirementBriefWorker`、真实 Packx Agent Loop、租户 Source Tool、文件 Artifact Store、Evaluation 和版本 Approval Gate；不再存在另一套 Fixture Worker 状态机。4 个完整任务批准具体 Artifact v1 后进入 `passed`，6 个有缺口或待确认任务由同一 Gate 停在 `needs_input`。
 
 持久集成测试覆盖：首次生成停在 `needs_input`，服务端补充并确认全部必填 Fact，生成 Artifact v2，Evaluation 允许审批，批准具体版本后通过 Stage Gate；用同一 Event Store 重建 RunEngine 后状态保持一致。
 

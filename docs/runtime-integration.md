@@ -1,4 +1,4 @@
-# Blackx Agent Runtime 集成边界
+# Packx Agent Runtime 集成边界
 
 状态：M1 Durable Runtime Frozen
 更新日期：2026-09-03

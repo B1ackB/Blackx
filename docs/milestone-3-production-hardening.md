@@ -14,7 +14,7 @@ M3 改为 Claude Code/Codex 风格的本地运行模式：用户现有电脑就�
 
 ## 2. M3 目标与非目标
 
-M3 的目标是把现有 Blackx 交付成可安装运行的本地 Agent：本地 Agent Core 持续负责 Loop、Context、Skill、Session、Checkpoint 与 Provider 调用；每次可执行 Tool/Command 调用进入短生命周期原生 Sandbox，并具备最小文件权限、网络控制、审批、Secret 边界、审计、取消和恢复证据。
+M3 的目标是把现有 Packx 交付成可安装运行的本地 Agent：本地 Agent Core 持续负责 Loop、Context、Skill、Session、Checkpoint 与 Provider 调用；每次可执行 Tool/Command 调用进入短生命周期原生 Sandbox，并具备最小文件权限、网络控制、审批、Secret 边界、审计、取消和恢复证据。
 
 M3 不证明真实用户价值。M2 的真实用户 Validation Debt 可以与 M3 并行补验，但在补验完成前不得宣称用户接受、返工改善或付费意愿。
 
@@ -35,7 +35,7 @@ M3 不包含：
 用户 / 本地 UI
         │
         ▼
-Blackx Local Host（受信产品进程）
+Packx Local Host（受信产品进程）
 ├─ Agent Loop / Context / Skill / Session
 ├─ RunEngine / Queue / Lease / Budget
 ├─ Provider Adapter / Policy / Approval
@@ -77,7 +77,7 @@ Agent Loop 可以在本地 Host 中自主循环，但它只能产生结构化 To
 M3 首个正式平台是 macOS：
 
 ```text
-Blackx Local Host
+Packx Local Host
         │ spawn(executable, argv, { shell: false, env: allowlist })
         ▼
 macOS Seatbelt Profile
@@ -91,9 +91,9 @@ Linux/WSL2 后续使用同一 Contract 接入 bubblewrap + seccomp；只有该 A
 
 ### 产品边界
 
-Blackx 本地版与 Claude Code/Codex 本地模式一样，复用用户设备与操作系统隔离能力，因此用户不需要额外机器。它只证明当前用户、当前设备、当前 Workspace 内的本地隔离，不证明云端多租户隔离。
+Packx 本地版与 Claude Code/Codex 本地模式一样，复用用户设备与操作系统隔离能力，因此用户不需要额外机器。它只证明当前用户、当前设备、当前 Workspace 内的本地隔离，不证明云端多租户隔离。
 
-未来如果提供 Blackx 托管云版，必须新增 Cloud Execution Plane ADR 与独立安全 Gate，再评估 containerd、gVisor、MicroVM、Runner Pool、服务身份和多租户 Secret/Data Gateway；不得把本地 M3 证据直接复用为云端生产声明。
+未来如果提供 Packx 托管云版，必须新增 Cloud Execution Plane ADR 与独立安全 Gate，再评估 containerd、gVisor、MicroVM、Runner Pool、服务身份和多租户 Secret/Data Gateway；不得把本地 M3 证据直接复用为云端生产声明。
 
 ## 4. Native Tool Sandbox Contract
 

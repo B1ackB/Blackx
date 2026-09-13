@@ -1,4 +1,4 @@
-# M0：Blackx Agent Core Baseline
+# M0：Packx Agent Core Baseline
 
 状态：Scope Frozen / DeepSeek Online Contract Passed
 冻结日期：2026-09-02

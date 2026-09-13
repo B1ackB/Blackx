@@ -173,7 +173,7 @@ describe.skipIf(!runSeatbeltTests)("macOS Seatbelt executor attack regression", 
 		expect(existsSync(undeclaredOutput)).toBe(false);
 	});
 
-	it("keeps Git and Blackx control state denied even under a broad Workspace grant", async () => {
+	it("keeps Git and Packx control state denied even under a broad Workspace grant", async () => {
 		const gitDirectory = join(workspaceRoot, ".git");
 		const stateDirectory = join(workspaceRoot, ".blackx-data");
 		const gitConfig = join(gitDirectory, "config");

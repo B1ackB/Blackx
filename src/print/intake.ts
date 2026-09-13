@@ -58,7 +58,7 @@ export function startConversation(): DomainEvent[] {
       type: "message.added",
       message: message(
         "assistant",
-        "你好，我是 Blackx。告诉我你想做什么包装，我会先整理事实、查询适用规则，并且只追问真正影响方案的问题。",
+        "你好，我是 Packx。告诉我你想做什么包装，我会先整理事实、查询适用规则，并且只追问真正影响方案的问题。",
       ),
     }),
   ];

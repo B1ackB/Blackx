@@ -1,13 +1,13 @@
-# Blackx 架构原则
+# Packx 架构原则
 
 本文解释根目录 [`AGENTS.md`](../../AGENTS.md) 中优先级约束的设计目的，并作为架构评审和里程碑验收依据。
 
 ## 1. 产品边界
 
-Blackx 不是通用聊天机器人，也不是外部 Harness 的印刷换皮。它是一个拥有自研 Agent Core、面向企业交付物的多模态长任务系统。
+Packx 不是通用聊天机器人，也不是外部 Harness 的印刷换皮。它是一个拥有自研 Agent Core、面向企业交付物的多模态长任务系统。
 
 ```text
-Blackx Product
+Packx Product
 ├── Business UI / API
 ├── Durable Workflow
 ├── Artifact Graph
@@ -18,9 +18,9 @@ Blackx Product
 ├── Context Providers
 ├── Runtime Ports
 └── Domain Packs
-    └── Blackx Print
+    └── Packx Print
 
-Blackx Agent Core
+Packx Agent Core
 ├── Session / Turn / Agent Loop
 ├── Model Client / Streaming
 ├── Hook / Tool Protocol
@@ -29,7 +29,7 @@ Blackx Agent Core
 └── Skill / Configuration
 ```
 
-M2 当前产品闭环收敛为包装售前需求澄清：面向包装企业的售前/跟单人员，把客户 Brief 转为可确认、可版本化、可审批的 `RequirementBrief`。Blackx Print 承载包装 Domain Pack，内部保留 `industry=print` 以兼容已有包装数据；家具行业已退出当前产品范围。见 [ADR-0010](../adr/0010-packaging-product-focus.md)。
+M2 当前产品闭环收敛为包装售前需求澄清：面向包装企业的售前/跟单人员，把客户 Brief 转为可确认、可版本化、可审批的 `RequirementBrief`。Packx Print 承载包装 Domain Pack，内部保留 `industry=print` 以兼容已有包装数据；家具行业已退出当前产品范围。见 [ADR-0010](../adr/0010-packaging-product-focus.md)。
 
 Agent Core 保持行业无关：它只执行一次受限 Agent Turn，不拥有企业 Workflow，也不包含印刷业务条件分支。
 
@@ -148,13 +148,13 @@ Context 不是数据库，也不是完整历史；它是 ContextEngine 针对某
 负责：
 
 - 向 RunEngine 暴露稳定、厂商中立的阶段执行接口
-- 映射 Blackx Agent Session、Turn、事件和终止原因
+- 映射 Packx Agent Session、Turn、事件和终止原因
 - 映射 Tool Call、权限请求、使用量和错误
 - 支持启动、继续、恢复、中断和取消
 - 隔离 Model Provider 协议与厂商消息类型
 - 提供用于离线测试的 Fake Runtime
 
-Blackx Agent Core 负责 Agent Loop、模型调用、Hook、Tool 协议和基础上下文管理，但不负责判断整个商品项目是否完成，也不拥有 Blackx 的业务状态。
+Packx Agent Core 负责 Agent Loop、模型调用、Hook、Tool 协议和基础上下文管理，但不负责判断整个商品项目是否完成，也不拥有 Packx 的业务状态。
 
 Agent Session ID 只是 Runtime Resume Handle。Run、Stage、Approval、Artifact 和 Event Store 仍由 Enterprise Layer 持久化；恢复任务时必须先恢复业务状态，再决定是否恢复或新建 Agent Session。
 
@@ -170,7 +170,7 @@ Agent Session ID 只是 Runtime Resume Handle。Run、Stage、Approval、Artifac
 - Stage/Run Snapshot
 - 压缩记录与质量评测
 
-ContextEngine 构建 Blackx 的权威业务上下文，再通过 AgentRuntimePort 注入 Runtime。Compact 只能优化模型上下文，不能成为 Fact、Artifact、Approval 或 Workflow 状态的唯一存储。
+ContextEngine 构建 Packx 的权威业务上下文，再通过 AgentRuntimePort 注入 Runtime。Compact 只能优化模型上下文，不能成为 Fact、Artifact、Approval 或 Workflow 状态的唯一存储。
 
 ### 3.4 Fact lifecycle
 
@@ -192,7 +192,7 @@ Artifact 精确记录所消费的 Fact Version。Fact 新增、改值或确认�
 - 大结果外置
 - Tool Event 与 Trace
 
-这里的 ToolRunner 是 Blackx 的企业 Tool Gateway。Agent Core 产生 Tool Call，Gateway 再执行 Domain Tool、企业权限、审批、幂等和审计；不得让通用 Shell Tool 绕过 Gateway 完成主要业务副作用。
+这里的 ToolRunner 是 Packx 的企业 Tool Gateway。Agent Core 产生 Tool Call，Gateway 再执行 Domain Tool、企业权限、审批、幂等和审计；不得让通用 Shell Tool 绕过 Gateway 完成主要业务副作用。
 
 ### 3.6 ArtifactService
 
@@ -233,7 +233,7 @@ Artifact 精确记录所消费的 Fact Version。Fact 新增、改值或确认�
 - 印刷规则 Evaluator
 - 报价输入与企业系统 Adapter
 
-Agent Core 比 Blackx Enterprise Layer 的边界更低：它只需要知道 Session、Turn、Message、Hook、Tool、Permission 和 Context，不应知道 Project、PrintProductSpec、Approval Gate 或 Artifact Lineage。
+Agent Core 比 Packx Enterprise Layer 的边界更低：它只需要知道 Session、Turn、Message、Hook、Tool、Permission 和 Context，不应知道 Project、PrintProductSpec、Approval Gate 或 Artifact Lineage。
 
 ## 5. 自研 Agent Core 演进策略
 
@@ -244,7 +244,7 @@ Agent Core 比 Blackx Enterprise Layer 的边界更低：它只需要知道 Sess
 ```text
 删除需求或标准库
 → Instructions / Skill / Tool
-→ Blackx Port / Adapter / Hook / Context Policy
+→ Packx Port / Adapter / Hook / Context Policy
 → 固定版本的 Model Provider 协议
 → 带 ADR 的通用 Agent Core 扩展
 ```
@@ -393,7 +393,7 @@ Harness 改动采用固定任务、固定模型和固定预算进行对照。至
 任何重要设计必须回答：
 
 1. 它解决哪个企业工作环节？
-2. 它属于 Agent Core、Blackx Enterprise Layer 还是 Domain Pack？
+2. 它属于 Agent Core、Packx Enterprise Layer 还是 Domain Pack？
 3. 权威事实来自哪里？
 4. 模型失败、进程崩溃或任务重复投递后如何恢复？
 5. 外部副作用如何幂等和审批？

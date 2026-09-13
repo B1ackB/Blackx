@@ -148,8 +148,18 @@ M3 采用 Claude Code/Codex 风格的本地运行模式：Agent Loop、Context�
 
 产品负责人要求缩紧范围，仅针对包装行业，不再提供家具入口或业务执行。此决定替代 D9 的跨行业产品范围；D10 的旧跨行业合成与真实模型记录保留为历史证据。当前需求 Schema、API、UI 和固定 Eval 均聚焦包装，已有非包装需求只读保留且不能转换为包装 Run。详见 [ADR-0010](adr/0010-packaging-product-focus.md)。
 
+## D13：产品更名为 Packx
+
+状态：Accepted · 确认日期：2026-09-13
+
+产品负责人将 Blackx 更名为 **Packx**，突出包装行业定位。当前界面、浏览器标题、助手自称、npm 项目名称及维护中的说明文档采用新名称。产品继续面向包装售前与跟单，Agent Core 与 Enterprise Layer 的行业无关边界不变。
+
+本次是品牌更名，不进行数据或协议迁移。`BLACKX_*` 环境变量、`.blackx-data/`、`.blackx-tools/`、浏览器存储键、HTTP Header、Adapter/Skill/Eval 标识和内部类型名称继续保留，防止已有配置、会话、审批与回归资产失配。GitHub 仓库仍使用 `B1ackB/Blackx`；克隆时可显式指定本地目录 `Packx`。历史 ADR、证据和本文件既有决策保留当时名称。
+
+开发者参与策略记录在[开发者参与指南](developer-community-guide.md)。记录方案不等于完成演示、发布招募、建立贡献入口或通过外部用户验证。
+
 ## 尚未确认
 
-- Node.js、包管理器与 Monorepo 工具的固定版本
+- 是否需要 Monorepo 工具（当前不新增）；Node.js 24.14.0 与 npm lockfile 基线已固定
 - 未来托管云的 PostgreSQL、对象存储、Queue 与 Sandbox Runner 选型
 - OpenAI 与 Anthropic Online Eval 使用的具体模型和预算门槛

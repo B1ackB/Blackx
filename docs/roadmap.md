@@ -1,13 +1,15 @@
-# Blackx 产品路线图
+# Packx 产品路线图
 
 状态：M0–M2 Engineering Baselines Frozen / M2 Real-user Validation Debt Open
-更新日期：2026-09-05
+更新日期：2026-09-13
+
+项目现名 Packx（原 Blackx）。开发者展示与参与计划见[开发者参与指南](developer-community-guide.md)；该计划不改变以下产品 Gate，也不代表已完成外部贡献者或真实用户验证。
 
 本文把 [`architecture/principles.md`](architecture/principles.md) 的架构方向转成可执行顺序。路线图以完成证据为准，不以代码量或模型能够演示为准。
 
 ## 1. 当前判断
 
-Blackx 已建立 M0 自研 Agent Core、M1 Durable Runtime 和 M2 需求澄清工程链路。当前产品收敛为包装行业，把包装客户 Brief 转成可确认、可版本化、可审批的 Requirement Brief；包装固定评测已替换旧跨行业基线，真实包装目标用户验证仍待完成。
+Packx 已建立 M0 自研 Agent Core、M1 Durable Runtime 和 M2 需求澄清工程链路。当前产品收敛为包装行业，把包装客户 Brief 转成可确认、可版本化、可审批的 Requirement Brief；包装固定评测已替换旧跨行业基线，真实包装目标用户验证仍待完成。
 
 2026-09-05 已落实一轮四项产品工作：执行与本机访问边界、真实附件 Sandbox Tool、会话/需求单 UI、来源与版本导出。正式 macOS PDF 链路和固定 HTTP 产品验收已通过；[证据与剩余边界](evidence/local-product-slice-2026-09-05.md)单独记录，不代表 M3 全部 Gate 或真实用户价值验证通过。
 
@@ -26,14 +28,14 @@ Print 保留为一个可选 Domain Pack。封口袋标准、Proposal、视觉和
 
 ## 3. 采用策略
 
-Blackx 应用层和 Agent Core 采用 TypeScript。Harness 基线是项目自研的最小 Agent Core，通过 `AgentRuntimePort` 与 Enterprise Layer 隔离；不使用 Codex SDK，也不复制外部 Harness 源码。Core 只实现已由固定 Contract/Eval 证明必要的行业无关能力。
+Packx 应用层和 Agent Core 采用 TypeScript。Harness 基线是项目自研的最小 Agent Core，通过 `AgentRuntimePort` 与 Enterprise Layer 隔离；不使用 Codex SDK，也不复制外部 Harness 源码。Core 只实现已由固定 Contract/Eval 证明必要的行业无关能力。
 
-Online Eval 使用 API Key。模型能力通过 `AgentModelProvider` 接入，首个 Online Adapter 直接调用 Anthropic Messages compatible endpoint。Blackx 不对外暴露 Anthropic-compatible API，Provider DTO 不进入 Agent Loop 以外的业务层。
+Online Eval 使用 API Key。模型能力通过 `AgentModelProvider` 接入，首个 Online Adapter 直接调用 Anthropic Messages compatible endpoint。Packx 不对外暴露 Anthropic-compatible API，Provider DTO 不进入 Agent Loop 以外的业务层。
 
 执行顺序：
 
 ```text
-Blackx AgentRuntimePort
+Packx AgentRuntimePort
 → Self-owned Agent Loop
 → AgentModelProvider
 → Anthropic Messages Adapter
@@ -47,7 +49,7 @@ Blackx AgentRuntimePort
 
 ## 4. 里程碑
 
-### M0：Blackx Agent Core Baseline
+### M0：Packx Agent Core Baseline
 
 目标：证明自研最小 Core 可以通过稳定 Port 重复执行、留证和恢复，而不是只完成一次模型 Demo。
 
@@ -79,7 +81,7 @@ M1 使用单机持久化、SQLite Queue 和行业无关固定 Fixture。多主�
 
 ### M3：Local Product Hardening
 
-目标：在 M2 工程基线冻结后，把 Blackx 交付为 Claude Code/Codex 风格的本地 Agent：Agent Loop 在用户设备的受信 Host 中运行，外部 Tool/Command 子进程通过原生 OS Sandbox 隔离，并补全权限、Approval、Secret、备份恢复、迁移、监控和本地发行能力。M3 技术加固可以与真实用户补验并行，但在取得用户证据前不得把加固结果表述为产品价值证明。
+目标：在 M2 工程基线冻结后，把 Packx 交付为 Claude Code/Codex 风格的本地 Agent：Agent Loop 在用户设备的受信 Host 中运行，外部 Tool/Command 子进程通过原生 OS Sandbox 隔离，并补全权限、Approval、Secret、备份恢复、迁移、监控和本地发行能力。M3 技术加固可以与真实用户补验并行，但在取得用户证据前不得把加固结果表述为产品价值证明。
 
 M3 首个正式平台为 macOS，复用系统 Seatbelt，不要求 Docker 或额外机器；Linux/WSL2 后续通过同一 Port 接入 bubblewrap + seccomp。托管云、多租户 Runner、gVisor、Kubernetes 和 MicroVM 延后到出现明确云端需求后另立 ADR，不作为本地 M3 完成条件。
 
@@ -120,17 +122,17 @@ M0–M2 工程基线已经关闭，近期队列转向必要的本地产品安全
 
 已确认：
 
-1. Blackx 应用层采用 TypeScript。
-2. M0 Harness 基线为 Blackx 自研最小 Agent Core，不采用 Codex SDK。
+1. Packx 应用层采用 TypeScript。
+2. M0 Harness 基线为 Packx 自研最小 Agent Core，不采用 Codex SDK。
 3. Online Runtime 使用 API Key，并支持 Anthropic Messages 协议兼容路径。
 4. M1/M2 采用行业无关 Runtime 和首个真实产品闭环；Print 保留为 Domain Pack 和回归资产。
 5. RSI 位于 Harness 上层，必须晚于稳定产品 Baseline 和不可由候选修改的安全控制面。
+6. Node.js 24.14.0 和 npm 已在 `.nvmrc`、`package.json`、`package-lock.json` 固定运行基线；构建依赖以 lockfile 为准。
 
 仍需确认：
 
-1. Node.js、包管理器和构建系统的固定版本。
-2. 未来托管云的 PostgreSQL、对象存储、Queue 与 Sandbox Runner 组合；本地 M3 不提前选择。
-3. DeepSeek Online Eval 的固定模型、预算和基准保存格式。
+1. 未来托管云的 PostgreSQL、对象存储、Queue 与 Sandbox Runner 组合；本地 M3 不提前选择。
+2. DeepSeek Online Eval 的固定模型、预算和基准保存格式。
 
 技术栈、持久化和部署选择一旦影响 P1 分层或形成长期锁定，应新增 ADR；普通可逆实现选择记录在对应里程碑 Decision Log。
 
