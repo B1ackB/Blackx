@@ -4,7 +4,7 @@
 
 Packx is a local Agent workspace for **packaging presales and order follow-up**. It combines a self-built, industry-neutral Agent Core with a workflow layer that manages sourced facts, versioned requirement briefs, approvals, and recovery.
 
-The project is an engineering prototype you can run and inspect locally. It is not a production SaaS or a packaged desktop application. The current product focuses on packaging; the `print` domain identifier is retained for compatibility.
+The project is an engineering prototype you can run and inspect locally. An unsigned macOS local release is available; it is not a production SaaS or a signed desktop installer. The current product focuses on packaging; the `print` domain identifier is retained for compatibility.
 
 Packx was previously named Blackx. The interface and package name now use Packx; existing `BLACKX_*` environment variables, `.blackx-data/` storage and internal protocol identifiers remain compatible without migration. The GitHub repository is still `B1ackB/Blackx`. Historical ADRs and evidence retain their original names.
 
@@ -12,6 +12,7 @@ See the [developer participation guide](docs/developer-community-guide.md) (Chin
 
 ## What you can do
 
+- Switch to Plan mode, review a versioned plan, and explicitly confirm it before up to four isolated subagents execute in sequence. Pause and resume from the workspace. See the [Plan mode guide](docs/plan-mode.md) (Chinese).
 - Create and delete conversations; receive streamed replies; stop and retry a turn.
 - Switch the interface between Chinese and English. Existing messages and source documents retain their original language.
 - Attach documents and images. Read PDF, DOCX, and XLSX text through a sandboxed local parser on macOS.
@@ -99,18 +100,69 @@ Real requests can incur provider charges. Selected document contents and model i
 
 The no-key fixture has a scripted response sequence; use a real provider for arbitrary conversations. No approved requirement brief should be treated as a production-ready print file.
 
-## How the code fits together
+## Project architecture
 
-```text
-Browser workspace
-    → Local API host
-        → AgentRuntimePort → Agent Core → Model Provider / controlled tools
-        → Workflow engine → Facts / Artifact versions / Approvals / Events
-                                              ↑
-                                Packaging domain rules and evaluators
+The diagram follows the current local implementation. Solid arrows show requests and execution; dotted arrows show domain rules and shared infrastructure. Return paths are omitted for readability.
+
+```mermaid
+flowchart TB
+	UI["Packx workspace · React<br/>Chat · Plan · Files · Approvals"]
+
+	subgraph HOST["Local Host · API and Enterprise Layer"]
+		API["Local API<br/>Session authentication · Scope checks · SSE"]
+		CHAT["Direct conversation"]
+		PLAN["Plan workflow<br/>Read-only planning · Versioned plan"]
+		CONFIRM{"User confirms<br/>this plan version"}
+		CHILD["Subagent execution<br/>Up to 4 sequential tasks · Separate sessions"]
+		WORKFLOW["Business workflow<br/>Facts · Artifact versions · Evaluation · Approval"]
+		JOBS["Shared job queue and scheduler<br/>Checkpoints · Pause · Recovery · Cancellation"]
+		API --> CHAT
+		API --> PLAN
+		API --> WORKFLOW
+		PLAN --> CONFIRM
+		CONFIRM -->|Confirmed| CHILD
+		PLAN -.-> JOBS
+		CHILD -.-> JOBS
+		WORKFLOW -.-> JOBS
+	end
+
+	DOMAIN["Packaging domain<br/>Requirement briefs · Schemas · Rules and evaluators"]
+	PORT["AgentRuntimePort<br/>Shared execution contract"]
+	CORE["Industry-neutral Agent Core<br/>Agent Loop · Context / Compact · Skills / Hooks · Tool protocol"]
+	MODEL["Model Provider adapter<br/>Anthropic-compatible / Offline fixture"]
+	TOOLS["Controlled tool adapters<br/>File policy · Per-operation write approval · Audit"]
+	NATIVE["Native document reader<br/>PDF / DOCX / XLSX · macOS sandbox"]
+	STORE[("Local persistence<br/>Sessions / Traces · Plan events / Results<br/>Workflow events / Artifacts · Jobs / Checkpoints")]
+
+	UI --> API
+	DOMAIN -.-> WORKFLOW
+	CHAT --> PORT
+	PLAN -->|Read-only turn| PORT
+	CHILD -->|User imports results| WORKFLOW
+	CHILD -->|One task per session| PORT
+	WORKFLOW -->|Stage worker| PORT
+	PORT --> CORE
+	CORE --> MODEL
+	CORE --> TOOLS
+	TOOLS --> NATIVE
+	HOST -.-> STORE
+	CORE -.-> STORE
+
+	classDef entry fill:#dbeafe,stroke:#2563eb,color:#172554
+	classDef orchestration fill:#eef2ff,stroke:#6366f1,color:#312e81
+	classDef gate fill:#fef3c7,stroke:#d97706,color:#78350f
+	classDef runtime fill:#dcfce7,stroke:#16a34a,color:#14532d
+	classDef infrastructure fill:#f1f5f9,stroke:#64748b,color:#0f172a
+	class UI,API entry
+	class CHAT,PLAN,CHILD,WORKFLOW orchestration
+	class CONFIRM gate
+	class PORT,CORE runtime
+	class DOMAIN,JOBS,MODEL,TOOLS,NATIVE,STORE infrastructure
 ```
 
-The Agent chooses actions within a stage. The Host owns permissions, workflow transitions, validation, and completion. A model finishing its reply does not itself complete a business workflow.
+The Host owns plan confirmation, subagent dispatch, permissions, workflow transitions, validation, and completion. All execution paths reuse the same runtime; packaging rules stay outside the Core. Subagents have separate contexts and share the parent conversation's file permission scope. Plan confirmation does not approve file writes or business deliveries. A model finishing its reply does not itself complete a business workflow.
+
+See the [Plan mode guide](docs/plan-mode.md) and [ADR-0015](docs/adr/0015-confirmed-plans-and-bounded-subagents.md) for execution limits and recovery behavior.
 
 | Location | Responsibility |
 | --- | --- |
@@ -127,6 +179,8 @@ The Agent chooses actions within a stage. The Host owns permissions, workflow tr
 
 Start with [architecture principles](docs/architecture/principles.md), then follow a feature from the UI through the local API and runtime. Read [AGENTS.md](AGENTS.md) before changing architecture or implementation. Most deeper design documents are currently Chinese; both READMEs cover the complete onboarding path.
 
+Local product work is tracked in the [completion work sheet](docs/local-product-completion.md) (Chinese). See [local operations](docs/local-operations.md) for startup diagnostics, backup and restore; try the clearly labelled [synthetic coffee-pouch task](examples/coffee-pouch-intake.md). Real-user validation remains pending.
+
 ## Verification commands
 
 | Command | Purpose | External model needed? |
@@ -135,6 +189,7 @@ Start with [architecture principles](docs/architecture/principles.md), then foll
 | `npm run eval:offline` | Fixed offline Harness evaluation | No |
 | `npm run eval:m1` | M1 workflow evaluation | No |
 | `npm run eval:m2` | Packaging requirement-brief evaluation | No |
+| `npm run eval:plan` | Fixed Plan confirmation and subagent baseline | No |
 | `npm run build:native` | Compile the macOS reader | No |
 | `npm run test:native` | Real macOS sandbox and document tests | No |
 | `npm run eval:product` | Local provider/API/workflow smoke test; cleans up afterward | No |
@@ -152,7 +207,7 @@ For online evaluation, inject provider variables into the terminal environment a
 - **Deletion:** deleting a conversation removes access through the workspace and stops its associated work. Historical data remains for audit; this is not secure erasure. Local file deletion removes the original file after approval and retains a managed backup.
 - **Documents:** PDF text extraction has no OCR. DOCX supports paragraphs and tables; XLSX supports sheet/cell values and does not recalculate formulas. Legacy `.doc`/`.xls` and encrypted documents are unsupported. Parsing is bounded: files up to 10 MiB, PDF up to 100 pages / 8,000 Swift characters, DOCX/XLSX up to 24,000 characters, XLSX up to 20 sheets / 500 rows per sheet. Truncated output is marked.
 - **Observability:** token/cache statistics reflect fields actually returned by the provider, with retention and coverage limits. Missing data is not invented. Fixture numbers are not performance or billing evidence.
-- **Deployment:** the host binds to loopback and uses local session/Host/Origin checks. This is not a multi-user login system or proof of production tenant isolation. Native resource controls and broader deployment hardening remain unfinished.
+- **Deployment:** the host binds to loopback and uses local session/Host/Origin checks. This is not a multi-user login system or proof of production tenant isolation. Fixed parsers have resource budgets and crash cleanup; arbitrary-code isolation and enterprise deployment remain unverified.
 - **Evidence:** offline, native, and local product checks are separate from real-provider and real-user validation. See the [2026-09-07 feature evidence](docs/evidence/streaming-bilingual-documents-2026-09-07.md), [streaming/document ADR](docs/adr/0014-streaming-and-document-sources.md), and [roadmap](docs/roadmap.md) for scope and remaining work.
 
 ## Troubleshooting
@@ -171,3 +226,7 @@ For online evaluation, inject provider variables into the terminal environment a
 ## License
 
 [MIT](LICENSE). Third-party dependencies and their review are documented in [docs/dependencies.md](docs/dependencies.md). Reference repositories are not production source dependencies.
+
+### Local release and settings
+
+Run `npm run release` to produce a macOS directory, archive and checksum under `releases/`. Open `Packx.command` inside the directory; Node 24.14+ (24.x) is required, and the first launch installs pinned dependencies. Use **Configure model** in the sidebar, save the connection, then restart. Task names and Plan objectives are searchable in the sidebar. See the [release guide](docs/release-start.md) and [local operations](docs/local-operations.md). This local release is unsigned; clean-device and enterprise deployment validation remain open.

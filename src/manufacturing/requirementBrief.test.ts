@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { requirementBriefFixtures } from "./requirementBrief.fixtures";
-import { evaluateRequirementBrief, normalizeRequirementFactKey } from "./requirementBrief";
+import { createRequirementBrief, evaluateRequirementBrief, normalizeRequirementFactKey } from "./requirementBrief";
 
 describe("M2 Requirement Brief baseline", () => {
+	it("keeps optional packaging details in drafts and requires their explicit confirmation before approval", () => {
+		const baseline = structuredClone(requirementBriefFixtures[0].artifact);
+		const material = { ...baseline.facts[0], key: "material_structure", value: "模拟客户材料说明，尚待核对", status: "unverified" as const, sourceType: "model_output" as const };
+		const draft = createRequirementBrief({ ...baseline, facts: [...baseline.facts, material] });
+		expect(draft.missingRequiredFacts).toEqual([]);
+		expect(draft.nextAction).toBe("confirm_facts");
+		expect(evaluateRequirementBrief(draft)).toMatchObject({ passed: true, approvalEligible: false });
+		const confirmed = createRequirementBrief({ ...draft, facts: draft.facts.map((fact) => fact.key === material.key ? { ...fact, status: "verified", sourceType: "human_confirmation" } : fact) });
+		expect(evaluateRequirementBrief(confirmed).approvalEligible).toBe(true);
+		expect(evaluateRequirementBrief(baseline).approvalEligible).toBe(true);
+	});
 	it("rejects retired industries and their fields in new artifacts", () => {
 		const artifact = structuredClone(requirementBriefFixtures[0]!.artifact);
 		expect(evaluateRequirementBrief({ ...artifact, industry: "furniture" })).toMatchObject({ passed: false, approvalEligible: false, issues: expect.arrayContaining([expect.objectContaining({ code: "invalid_industry" })]) });

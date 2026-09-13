@@ -315,3 +315,7 @@ Approval `approved` 只表示人工决定已经持久化，Run 仍保持 `waitin
 unset BLACKX_COMMAND_API_TOKEN BLACKX_WORKER_API_TOKEN BLACKX_OPERATOR_API_TOKEN
 unset BLACKX_EVENT_STORE_PATH BLACKX_ARTIFACT_STORE_PATH BLACKX_ATTACHMENT_STORE_PATH BLACKX_AGENT_STATE_PATH BLACKX_STAGE_JOB_QUEUE_PATH BLACKX_STAGE_JOB_QUEUE_DRIVER
 ```
+
+## 图形配置入口
+
+运行 Packx 后点击侧栏“配置模型”，填写兼容 Anthropic Messages 的地址、模型 ID 和 API Key，保存后停止并重新启动。保存与诊断不调用模型。设置保存在本机私密文件 `.packx-settings.json`，优先于 `.env` 中对应的 Provider 项；留空 Key 保留已有凭据，显式清除会同时屏蔽环境变量中的 Key。文件不进入业务备份，也不会返回给浏览器。完整说明见[本地操作](local-operations.md)。

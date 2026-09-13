@@ -66,6 +66,7 @@ export interface RuntimeTurnRequest {
   input: string;
 	attachments?: AgentImageAttachment[];
   outputSchema?: Record<string, unknown>;
+	limits?: { maxIterations: number; maxToolExecutions: number; maxInputTokens: number };
   fallbackOutput: string;
   policy: {
 		sandboxMode: "read-only" | "workspace-write";

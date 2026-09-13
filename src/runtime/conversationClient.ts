@@ -1,3 +1,5 @@
+import type { ModelSettingsInput, ModelSettingsView } from "./modelSettings";
+import type { PlanWorkspace } from "../enterprise/agentPlan";
 import { readEvents } from "./eventStream";
 import type { ModelTelemetryView } from "./modelTelemetry";
 import type { RuntimeHealth } from "./contracts";
@@ -83,6 +85,13 @@ async function attachmentRequest(path: string, init?: RequestInit): Promise<Resp
 }
 
 export class ConversationClient {
+	modelSettings() { return request<ModelSettingsView>("/api/model-settings"); }
+	saveModelSettings(value: ModelSettingsInput) { return request<ModelSettingsView>("/api/model-settings", { method: "PUT", body: JSON.stringify(value) }); }
+	async rename(conversationId: string, name: string, nameRevision: number, language: Language) {
+		const result = await request<{ conversation: ConversationView }>(`/api/conversations/${encodeURIComponent(conversationId)}?language=${language}`, { method: "PATCH", body: JSON.stringify({ name, nameRevision }) });
+		return result.conversation;
+	}
+
 	async watchActivity(conversationId: string, onActivity: (activity?: RuntimeActivity) => void, signal: AbortSignal): Promise<void> {
 		const response = await attachmentRequest(`/api/conversations/${encodeURIComponent(conversationId)}/activity?stream=1`, { signal, headers: { accept: "text/event-stream" } });
 		if (!response.body) throw new ConversationClientError("stream_unavailable", "Missing response stream");
@@ -195,6 +204,14 @@ export class ConversationClient {
 		)).traces;
 	}
 
+	async getPlan(conversationId: string): Promise<PlanWorkspace> {
+		return (await request<{ plan: PlanWorkspace }>(`/api/conversations/${encodeURIComponent(conversationId)}/plan`)).plan;
+	}
+
+	async planCommand(conversationId: string, command: Record<string, unknown>): Promise<PlanWorkspace> {
+		return (await request<{ plan: PlanWorkspace }>(`/api/conversations/${encodeURIComponent(conversationId)}/plan`, { method: "POST", body: JSON.stringify(command) })).plan;
+	}
+
 	async send(
 		conversationId: string,
 		message: { messageId: string; content: string; attachmentIds?: string[] },
@@ -295,10 +312,11 @@ export class ConversationClient {
 	async startRequirementBrief(
 		conversationId: string,
 		requestId: string,
+		planVersion?: number,
 	): Promise<RequirementBriefWorkspaceView> {
 		return (await request<{ requirementBrief: RequirementBriefWorkspaceView }>(
 			`/api/conversations/${encodeURIComponent(conversationId)}/requirement-brief`,
-			{ method: "POST", body: JSON.stringify({ requestId, industry: "print" }) },
+			{ method: "POST", body: JSON.stringify({ requestId, industry: "print", planVersion }) },
 		)).requirementBrief;
 	}
 

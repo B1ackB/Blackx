@@ -1,3 +1,4 @@
+import type { PlanWorkspace } from "../src/enterprise/agentPlan";
 import { readEvents } from "../src/runtime/eventStream";
 import { summarizeModelCalls, type ModelTelemetryView } from "../src/runtime/modelTelemetry";
 import assert from "node:assert/strict";
@@ -6,7 +7,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { resolve, join } from "node:path";
 import { once } from "node:events";
 import { documentFixture } from "../server/testing/documentFixture";
 import { createRequirementBrief, requiredRequirementFacts } from "../src/manufacturing/requirementBrief";
@@ -21,9 +22,12 @@ import { ProposalRunEngine } from "../src/enterprise/proposalRunEngine";
 
 // Deterministic local provider: exercises the real HTTP adapter, never contacts a model vendor.
 const directory = mkdtempSync(join(tmpdir(), "blackx-product-smoke-"));
+const dataDirectory = join(realpathSync(directory), "state"); mkdirSync(dataDirectory);
 const documents = join(realpathSync(directory), "user-documents"); mkdirSync(documents);
+const planDocument = join(documents, "plan-output.md");
 const localDocument = join(documents, "客户包装需求.md");
 const serve = process.argv.includes("--serve");
+const settingsPath = resolve(`.packx-settings.json-${crypto.randomUUID()}.fixture`);
 const provider = createServer(async (request, response) => {
 	const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
 	const body = JSON.parse(Buffer.concat(chunks).toString()) as AnthropicMessageRequest;
@@ -33,7 +37,18 @@ const provider = createServer(async (request, response) => {
 	const last = body.messages.at(-1)?.content ?? [];
 	const requirement = body.tools?.some((tool) => tool.name === "project_source_read");
 	let content: unknown[];
-	if (requirement && !last.some((block) => block.type === "tool_result")) {
+	const instructions = JSON.stringify(body.system);
+	if (instructions.includes("Plan only. Do not execute") && JSON.stringify(blocks).includes("plan-write-fixture")) {
+		content = [{ type: "text", text: JSON.stringify({ summary: "Create an explicitly approved draft file", tasks: [{ title: "Write draft", objective: "plan-write-fixture", tools: ["file_write"] }] }) }];
+	} else if (instructions.includes("Plan only. Do not execute")) {
+		content = [{ type: "text", text: JSON.stringify({ summary: "整理包装需求资料，分别核对来源与缺失信息（固定演示计划）。", tasks: [{ title: "来源核对", objective: "汇总包装资料来源并保留未验证状态。", tools: ["file_list"] }, { title: "缺失信息", objective: "列出需要用户确认的包装需求字段。", tools: [] }] }) }];
+	} else if (instructions.includes("Execute ONLY this approved subtask") && !last.some((block) => block.type === "tool_result") && JSON.stringify(blocks).includes("plan-write-fixture")) {
+		content = [{ type: "tool_use", id: "plan-write", name: "file_write", input: { path: planDocument, expectedSha256: null, content: "Draft from approved plan; facts remain unverified." } }];
+	} else if (instructions.includes("Execute ONLY this approved subtask") && body.tools?.some((tool) => tool.name === "file_list") && !last.some((block) => block.type === "tool_result")) {
+		content = [{ type: "tool_use", id: "plan-list", name: "file_list", input: {} }];
+	} else if (instructions.includes("Execute ONLY this approved subtask")) {
+		content = [{ type: "text", text: JSON.stringify({ summary: "已完成本子任务的固定演示输出。数量、尺寸与交期仍待用户确认。", evidence: ["local-fixture：此响应只验证编排链路，不代表真实模型核验。"], limitations: ["未验证生产参数；未写入文件。"] }) }];
+	} else if (requirement && !last.some((block) => block.type === "tool_result")) {
 		const system = JSON.stringify(body.system);
 		const ids = [...new Set(system.match(/attachment-[a-f0-9]+/g) ?? [])];
 		content = [{ type: "tool_use", id: `source-${Date.now()}`, name: "project_source_read", input: { sourceId: "customer-brief" } }, ...ids.map((attachmentId) => ({ type: "tool_use", id: `inspect-${attachmentId}-${Date.now()}`, name: "asset_metadata_inspect", input: { attachmentId } }))];
@@ -93,8 +108,8 @@ const port = serve ? 5178 : (reservation.address() as { port: number }).port;
 await new Promise<void>((resolve) => reservation.close(() => resolve()));
 const baseUrl = `http://127.0.0.1:${port}`;
 const host = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], { env: {
-	...process.env, BLACKX_PORT: String(port), BLACKX_RUNTIME_MODE: "anthropic", ANTHROPIC_API_KEY: "offline-fixture-only", ANTHROPIC_BASE_URL: `http://127.0.0.1:${providerPort}`, ANTHROPIC_MODEL: "local-fixture",
-	BLACKX_FILE_STORE_PATH: join(directory, "files"), BLACKX_AGENT_STATE_PATH: join(directory, "sessions"), BLACKX_EVENT_STORE_PATH: join(directory, "events.json"), BLACKX_STAGE_JOB_QUEUE_DRIVER: "file", BLACKX_STAGE_JOB_QUEUE_PATH: join(directory, "queue.json"), BLACKX_CRON_SCHEDULE_PATH: join(directory, "cron.json"), BLACKX_ATTACHMENT_STORE_PATH: join(directory, "attachments"), BLACKX_ARTIFACT_STORE_PATH: join(directory, "artifacts"), BLACKX_INSPECTION_CACHE_PATH: join(directory, "inspections"), BLACKX_WORKSPACE_ROOT: directory, BLACKX_ENABLE_RUNTIME_EVAL: "0", BLACKX_COMMAND_API_TOKEN: "", BLACKX_WORKER_API_TOKEN: "", BLACKX_OPERATOR_API_TOKEN: "",
+	...process.env, PACKX_SETTINGS_PATH: settingsPath, BLACKX_DATA_ROOT: dataDirectory, BLACKX_PORT: String(port), BLACKX_RUNTIME_MODE: "anthropic", ANTHROPIC_API_KEY: "offline-fixture-only", ANTHROPIC_BASE_URL: `http://127.0.0.1:${providerPort}`, ANTHROPIC_MODEL: "local-fixture",
+	BLACKX_FILE_STORE_PATH: join(dataDirectory, "files"), BLACKX_AGENT_STATE_PATH: join(dataDirectory, "sessions"), BLACKX_EVENT_STORE_PATH: join(dataDirectory, "events.json"), BLACKX_STAGE_JOB_QUEUE_DRIVER: "file", BLACKX_STAGE_JOB_QUEUE_PATH: join(dataDirectory, "queue.json"), BLACKX_CRON_SCHEDULE_PATH: join(dataDirectory, "cron.json"), BLACKX_ATTACHMENT_STORE_PATH: join(dataDirectory, "attachments"), BLACKX_ARTIFACT_STORE_PATH: join(dataDirectory, "artifacts"), BLACKX_INSPECTION_CACHE_PATH: join(dataDirectory, "inspections"), BLACKX_WORKSPACE_ROOT: directory, BLACKX_ENABLE_RUNTIME_EVAL: "0", BLACKX_COMMAND_API_TOKEN: "", BLACKX_WORKER_API_TOKEN: "", BLACKX_OPERATOR_API_TOKEN: "",
 }, stdio: ["ignore", "pipe", "pipe"] });
 let output = ""; host.stdout.on("data", (chunk) => { output += String(chunk); }); host.stderr.on("data", (chunk) => { output += String(chunk); });
 const close = async () => {
@@ -102,6 +117,7 @@ const close = async () => {
 	if (host.exitCode === null && host.signalCode === null) await once(host, "exit");
 	provider.closeAllConnections(); await new Promise<void>((resolve) => provider.close(() => resolve()));
 	rmSync(directory, { recursive: true, force: true });
+	rmSync(settingsPath, { force: true });
 };
 process.once("SIGINT", () => void close().then(() => process.exit(0)));
 process.once("SIGTERM", () => void close().then(() => process.exit(0)));
@@ -125,6 +141,98 @@ try {
 		const response = await fetch(`${baseUrl}${path}`, { headers: { ...headers, "content-type": "application/json" }, method: body === undefined ? "GET" : "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 		const value = await response.json(); assert(response.ok, `${path}: ${JSON.stringify(value)}`); return value as T;
 	}
+	const planId = (await api("/api/conversations", {})).conversation.conversationId;
+	const planPath = `/api/conversations/${planId}/plan`;
+	let planState = (await api<{ plan: PlanWorkspace }>(planPath)).plan;
+	const planCommand = async (command: Record<string, unknown>) => {
+		planState = (await api<{ plan: PlanWorkspace }>(planPath, { ...command, revision: planState.revision, requestId: crypto.randomUUID() })).plan;
+	};
+	const awaitPlan = async (status: string) => {
+		for (let i = 0; i < 150; i++) {
+			planState = (await api<{ plan: PlanWorkspace }>(planPath)).plan;
+			if (planState.versions.at(-1)?.status === status) return;
+			assert.notEqual(planState.versions.at(-1)?.status, "failed", JSON.stringify(planState));
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		throw new Error(`Plan did not reach ${status}`);
+	};
+	await planCommand({ action: "mode", mode: "plan" });
+	await planCommand({ action: "generate", objective: "整理包装需求并列出待确认信息" });
+	await awaitPlan("awaiting_confirmation");
+	assert.equal(planState.versions[0].children.length, 0);
+	const bypass = await fetch(`${baseUrl}/api/conversations/${planId}/messages`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ messageId: "plan-bypass", content: "同意并执行" }) });
+	assert.equal(bypass.status, 409);
+	await planCommand({ action: "confirm", version: 1, confirmed: true });
+	await awaitPlan("completed");
+	assert.equal(planState.versions[0].children.length, 2);
+	assert.equal(new Set(planState.versions[0].children.map((c) => c.sessionId)).size, 2);
+	const planSummary = (await api(`/api/conversations/${planId}`)).conversation;
+	assert.equal(planSummary.title, "整理包装需求并列出待确认信息");
+	const rename = await fetch(`${baseUrl}/api/conversations/${planId}`, { method: "PATCH", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "咖啡袋交接计划", nameRevision: planSummary.nameRevision }) });
+	assert(rename.ok); assert.equal(((await rename.json()) as { conversation: ConversationView }).conversation.revision, planSummary.revision);
+	assert.equal((await api(`/api/conversations/${planId}`)).conversation.title, "咖啡袋交接计划");
+	assert.equal((await api<{ plan: PlanWorkspace }>(planPath)).plan.revision, planState.revision);
+	const privateSettings = await api<{ revision: number; keyConfigured: boolean; apiKey?: string }>("/api/model-settings");
+	assert.equal(privateSettings.keyConfigured, true); assert.equal(privateSettings.apiKey, undefined);
+	const saveSettings = await fetch(`${baseUrl}/api/model-settings`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ revision: privateSettings.revision, mode: "anthropic", baseUrl: `http://127.0.0.1:${providerPort}`, model: "local-fixture", apiKey: "offline-fixture-only" }) });
+	assert.equal(saveSettings.status, 200);
+	for (const path of [`/${settingsPath.split("/").at(-1)}`, `/@fs${settingsPath}`, `/@fs${dataDirectory}/sessions/plans.sqlite`]) {
+		const raw = await fetch(baseUrl + path);
+		assert([403, 404].includes(raw.status), `Private file served through frontend: ${path}`);
+		assert(!(await raw.text()).includes("offline-fixture-only"));
+	}
+
+	assert.equal((await fetch(`${baseUrl}/api/model-settings`, { method: "PUT", headers: { "content-type": "application/json" }, body: "{}" })).status, 403);
+	const planBriefPath = `/api/conversations/${planId}/requirement-brief`;
+	const importBody = { requestId: "plan-import", industry: "print", planVersion: 1 };
+	await api(planBriefPath, importBody);
+	await api(planBriefPath, importBody);
+	const settlePlanBrief = async () => {
+		for (let i = 0; i < 150; i++) {
+			const view = (await api(planBriefPath)).requirementBrief;
+			assert.notEqual(view.job?.status, "dead_letter", JSON.stringify(view.job));
+			if (!["queued", "leased"].includes(view.job?.status ?? "")) return view;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		throw new Error("Plan requirement draft did not settle");
+	};
+	const imported = await settlePlanBrief();
+	assert.equal(imported.state.facts.plan_source.sourceRef, `plan:${planId}:version:1`);
+	assert.equal(imported.state.facts.quantity.status, "unverified");
+	assert.equal(imported.state.facts.quantity.sourceRef, `plan:${planId}:version:1`);
+	assert.equal(imported.state.proposalVersions.length, 1);
+	assert.equal((await api(`${planBriefPath}/versions/1`)).delivery.sourcePlan, `plan:${planId}:version:1`);
+	if (!serve) {
+		await api(`${planBriefPath}/facts`, { requestId: "plan-material", key: "material_structure", value: "模拟材料要求，供演示核对" });
+		for (const key of [...requiredRequirementFacts.print, "material_structure"]) await api(`${planBriefPath}/facts/${key}/decision`, { requestId: `plan-confirm-${key}`, decision: "verified" });
+		await api(planBriefPath, { ...importBody, requestId: "plan-regenerate" });
+		assert.equal((await settlePlanBrief()).state.stageStatus, "waiting_approval");
+		await api(`${planBriefPath}/approval`, { requestId: "plan-approve-delivery", decision: "approved" });
+		assert.equal((await settlePlanBrief()).state.stageStatus, "passed");
+		const delivery = (await api(`${planBriefPath}/versions/2`)).delivery;
+		assert.equal(delivery.status, "approved");
+		assert.equal(delivery.sourcePlan, `plan:${planId}:version:1`);
+		assert(delivery.content.facts.some((fact) => fact.key === "material_structure" && fact.status === "verified"));
+		for (const format of ["md", "html", "json"]) {
+			const response = await fetch(`${baseUrl}${planBriefPath}/versions/2?format=${format}`, { headers });
+			assert(response.ok); assert((await response.text()).includes(`plan:${planId}:version:1`));
+		}
+	}
+	await planCommand({ action: "mode", mode: "execute" });
+	if (!serve) {
+		await planCommand({ action: "mode", mode: "plan" });
+		await planCommand({ action: "generate", objective: "plan-write-fixture: create a packaging draft" });
+		await awaitPlan("awaiting_confirmation");
+		assert(!existsSync(planDocument));
+		await planCommand({ action: "confirm", version: 2, confirmed: true });
+		const approval = await pendingFor(`/api/conversations/${planId}`);
+		assert(!existsSync(planDocument), "Plan approval must not bypass file approval");
+		await api(`/api/conversations/${planId}/files/approvals/${approval.id}`, { decision: "approved" });
+		await awaitPlan("completed");
+		assert.equal(readFileSync(planDocument, "utf8"), "Draft from approved plan; facts remain unverified.");
+		await planCommand({ action: "mode", mode: "execute" });
+	}
+	console.log("PASS: Plan mode, explicit version confirmation, isolated subagents and persisted results through local HTTP fixture.");
 	const id = (await api("/api/conversations", {})).conversation.conversationId as string;
 	const path = `/api/conversations/${id}`;
 	// Observe real HTTP text before the message POST has completed, with authenticated SSE.
@@ -248,7 +356,7 @@ try {
 		assert.equal((await api(path)).conversation.messages.at(-1)?.role, "user");
 		assert((await api<ModelTelemetryView>(`${path}/model-calls`)).calls.some((call) => call.status === "cancelled"));
 		await api(`${path}/messages`, { messageId: "cron-delete", content: "定时任务删除回归：香港时区，每5分钟汇总需求，执行2次。" });
-		const schedules = new FileCronScheduleStore(join(directory, "cron.json"));
+		const schedules = new FileCronScheduleStore(join(dataDirectory, "cron.json"));
 		assert.equal(schedules.list({ tenantId: "local-user", workspaceId: "default-workspace" }).filter((schedule) => schedule.runId === id && schedule.status === "active").length, 1);
 		const deletingTurn = api(`${path}/messages`, { messageId: "delete-message", content: "停止测试，删除运行中的会话" }).catch((error: unknown) => error);
 		for (let attempt = 0; attempt < 40; attempt++) { if ((await api(`${path}/activity`)).activity?.phase === "model") break; await new Promise((resolve) => setTimeout(resolve, 50)); }
@@ -265,10 +373,10 @@ try {
 		assert.equal((await fetch(`${baseUrl}${path}/messages`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ messageId: "after-delete", content: "hello" }) })).status, 404);
 		const remaining = await fetch(`${baseUrl}/api/conversations`, { headers }).then((response) => response.json()) as { conversations: ConversationView[] };
 		assert(!remaining.conversations.some((conversation) => conversation.conversationId === id));
-		const persisted = new FileAgentStateStore(join(directory, "sessions"));
+		const persisted = new FileAgentStateStore(join(dataDirectory, "sessions"));
 		assert.equal(persisted.getSession({ tenantId: "local-user", workspaceId: "default-workspace", runId: id, sessionId: id }), undefined);
 		assert(schedules.list({ tenantId: "local-user", workspaceId: "default-workspace" }).every((schedule) => schedule.status === "paused"));
-		const retained = new ProposalRunEngine(new FileEnterpriseEventStore(join(directory, "events.json")), "requirement-brief").load({ tenantId: "local-user", workspaceId: "default-workspace", runId: start.requirementBrief.runId });
+		const retained = new ProposalRunEngine(new FileEnterpriseEventStore(join(dataDirectory, "events.json")), "requirement-brief").load({ tenantId: "local-user", workspaceId: "default-workspace", runId: start.requirementBrief.runId });
 		assert.equal(retained.stageStatus, "passed"); assert.equal(retained.approval?.status, "approved");
 		console.log("PASS: authenticated live SSE before completion, durable scoped model calls, cache usage, cancellation telemetry, Agent-triggered per-operation approval without directory grants, approved creation/modification/deletion at absolute paths, original-content backups, retired grant APIs, all-write approval, scoped history, same-message isolation, native PDF slice, workflow approval/exports, cancellation, conversation deletion and audit retention; provider = local deterministic fixture.");
 	}

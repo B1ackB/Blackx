@@ -56,9 +56,13 @@ RunEngine 在同一次 Event Store append 中写入 `stage.execution_requested` 
 - 默认 Fake 不读取 Secret。
 - Online 模式缺少 Base URL、Model 或 Key 时启动失败。
 
+## Plan 与子 Agent（2026-09-13）
+
+在既有单 Agent Runtime 上新增应用层 Plan 工作流：用户确认版本后，Host 通过同一 Port 顺序执行独立子 Session。详细边界与恢复策略见 [ADR-0015](adr/0015-confirmed-plans-and-bounded-subagents.md)。上文关于 M1 Worker 不等于子 Agent 的描述仍适用于原 Proposal 链路。
+
 ## M1 之后
 
-- 流式 Token、并行 Tool、跨主机生产 Queue/Schedule Adapter、任意脚本任务、Sub-agent 与 Agent Teams。当前 Agent-managed Background Task、有限 Cron、Outbox、租约心跳、单主机 SQLite Queue、指标和 DLQ 运维接口已实现。
+- 流式 Token、并行 Tool、跨主机生产 Queue/Schedule Adapter、任意脚本任务、嵌套/并行 Sub-agent 与 Agent Teams。当前 Agent-managed Background Task、有限 Cron、Outbox、租约心跳、单主机 SQLite Queue、指标和 DLQ 运维接口已实现。
 - 固定 M1 DeepSeek Online Gate 已通过；更多 Provider、长期延迟/成本趋势属于后续产品运维。
 - Approval/Audit/Tool Execution Store 的生产数据库 Adapter；当前持久化基线是租户隔离的本地文件。
 - 生产数据库/对象存储 Adapter、跨主机 Session 租约和本地残留锁回收。

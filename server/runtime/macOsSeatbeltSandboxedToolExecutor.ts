@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
+import { validToolExecutionManifest } from "../../src/agent/sandbox";
 import type {
 	SandboxedToolExecutorPort,
 	ToolExecutionManifest,
@@ -38,6 +39,7 @@ interface PreparedExecution {
 export interface MacOsSeatbeltSandboxedToolExecutorOptions {
 	workspaceRoot: string;
 	sandboxExecutable?: string;
+	protectedPaths?: readonly string[];
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -147,15 +149,18 @@ async function collectOutputs(
 ): Promise<readonly ToolExecutionOutput[]> {
 	const outputs: ToolExecutionOutput[] = [];
 	let totalBytes = 0;
-	const visit = async (directory: string): Promise<void> => {
+	let entries = 0;
+	const visit = async (directory: string, depth = 0): Promise<void> => {
+		if (depth > 32) throw new SandboxResourceError();
 		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			if (++entries > limits.maxOutputFiles + 64) throw new SandboxResourceError();
 			const path = resolve(directory, entry.name);
 			const metadata = await lstat(path);
 			if (metadata.isSymbolicLink() || (!metadata.isDirectory() && !metadata.isFile())) {
 				throw new SandboxPolicyError("Sandbox output must contain only regular files and directories");
 			}
 			if (metadata.isDirectory()) {
-				await visit(path);
+				await visit(path, depth + 1);
 				continue;
 			}
 			if (metadata.nlink !== 1) throw new SandboxPolicyError("Sandbox output hard links are not allowed");
@@ -267,6 +272,8 @@ async function prepareExecution(
 			resolve(canonicalWorkspaceRoot, ".git"),
 			resolve(lexicalWorkspaceRoot, ".blackx-data"),
 			resolve(canonicalWorkspaceRoot, ".blackx-data"),
+			resolve(canonicalWorkspaceRoot, ".packx-settings.json"),
+			resolve(canonicalWorkspaceRoot, ".env"),
 		]),
 	};
 }
@@ -355,6 +362,10 @@ export class MacOsSeatbeltSandboxedToolExecutor implements SandboxedToolExecutor
 
 	async execute(manifest: ToolExecutionManifest, signal: AbortSignal): Promise<ToolExecutionResult> {
 		const startedAt = new Date();
+		if (!validToolExecutionManifest(manifest)) return failureResult(manifest, startedAt, "policy_denied", "invalid_manifest");
+		const supervisor = resolve(".blackx-tools/tool-supervisor");
+		try { await access(supervisor, constants.X_OK); }
+		catch { return failureResult(manifest, startedAt, "sandbox_unavailable", "supervisor_unavailable"); }
 		const abortedStatus = () => signal.reason instanceof Error && signal.reason.message === "tool_timeout"
 			? "timed_out" as const
 			: "cancelled" as const;
@@ -373,6 +384,7 @@ export class MacOsSeatbeltSandboxedToolExecutor implements SandboxedToolExecutor
 		let execution: PreparedExecution | undefined;
 		try {
 			execution = await prepareExecution(manifest, this.options.workspaceRoot);
+			execution.protectedPaths = [...execution.protectedPaths ?? [], ...this.options.protectedPaths ?? []];
 		} catch (error) {
 			return failureResult(
 				manifest,
@@ -399,7 +411,7 @@ export class MacOsSeatbeltSandboxedToolExecutor implements SandboxedToolExecutor
 			if (forcedStatus) return;
 			forcedStatus = status;
 			killProcessGroup(child?.pid, "SIGTERM");
-			killTimer = setTimeout(() => killProcessGroup(child?.pid, "SIGKILL"), 100);
+			killTimer = setTimeout(() => killProcessGroup(child?.pid, "SIGKILL"), 1000);
 			killTimer.unref();
 		};
 		const aborted = () => terminate(abortedStatus());
@@ -407,8 +419,14 @@ export class MacOsSeatbeltSandboxedToolExecutor implements SandboxedToolExecutor
 		try {
 			const profile = compileMacOsSeatbeltProfile(execution);
 			child = spawn(
-				this.sandboxExecutable,
-				["-p", profile, execution.executable, ...manifest.command.argv],
+				supervisor,
+				[
+					String(Math.min(manifest.limits.maxCpuSeconds ?? 30, 30)),
+					String(Math.min(manifest.limits.maxMemoryBytes ?? 512 * 1024 * 1024, 512 * 1024 * 1024)),
+					String(Math.min(manifest.limits.maxProcesses ?? 8, 8)),
+					String(manifest.limits.maxOutputBytes), String(manifest.limits.maxOutputFiles + 64), execution.temporaryDirectory,
+					this.sandboxExecutable, "-p", profile, execution.executable, ...manifest.command.argv,
+				],
 				{
 					cwd: execution.workingDirectory,
 					detached: true,
@@ -467,6 +485,8 @@ export class MacOsSeatbeltSandboxedToolExecutor implements SandboxedToolExecutor
 			if (forcedStatus) {
 				return result(manifest, startedAt, forcedStatus, outcome.code, stdout, stderr, [], forcedStatus);
 			}
+			if (outcome.code === 75) return result(manifest, startedAt, "resource_exhausted", outcome.code, stdout, stderr, [], "native_resource_limit");
+			if (outcome.code === 70) return result(manifest, startedAt, "sandbox_unavailable", outcome.code, stdout, stderr, [], "supervisor_failed");
 			if (outcome.code !== 0) {
 				const unavailable = outcome.code === 71 && stderr.text.includes("sandbox_apply");
 				return result(

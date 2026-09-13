@@ -1,3 +1,7 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import {
@@ -176,6 +180,8 @@ describe.skipIf(!runSeatbeltTests)("macOS Seatbelt executor attack regression", 
 	it("keeps Git and Packx control state denied even under a broad Workspace grant", async () => {
 		const gitDirectory = join(workspaceRoot, ".git");
 		const stateDirectory = join(workspaceRoot, ".blackx-data");
+		const settingsFile = join(workspaceRoot, ".packx-settings.json");
+		writeFileSync(settingsFile, "fixture-private-configuration");
 		const gitConfig = join(gitDirectory, "config");
 		const stateFile = join(stateDirectory, "events.json");
 		mkdirSync(gitDirectory);
@@ -195,6 +201,9 @@ describe.skipIf(!runSeatbeltTests)("macOS Seatbelt executor attack regression", 
 			writable: [workspaceRoot],
 		}), new AbortController().signal);
 
+		const privateRead = await executor.execute(manifest(workspaceRoot, { executable: "/bin/cat", argv: [settingsFile], readOnly: [workspaceRoot] }), new AbortController().signal);
+		expect(privateRead.status).toBe("failed");
+		expect(privateRead.stdout.text).not.toContain("fixture-private-configuration");
 		expect(read.status).toBe("failed");
 		expect(read.stdout.text).not.toContain("git-secret");
 		expect(write.status).toBe("failed");
@@ -369,6 +378,38 @@ describe.skipIf(!runSeatbeltTests)("macOS Seatbelt executor attack regression", 
 			));
 		}
 	});
+
+
+	it("enforces CPU, sampled RSS and process-count budgets", async () => {
+		const executor = new MacOsSeatbeltSandboxedToolExecutor({ workspaceRoot });
+		const cpu = await executor.execute(manifest(workspaceRoot, { executable: "/bin/sh", argv: ["-c", "while :; do :; done"], limits: { timeoutMs: 5000, maxCpuSeconds: 1 } }), new AbortController().signal);
+		expect(cpu.status).toBe("resource_exhausted");
+		const memory = await executor.execute(manifest(workspaceRoot, { executable: "/bin/sleep", argv: ["10"], limits: { maxMemoryBytes: 1 } }), new AbortController().signal);
+		expect(memory.status).toBe("resource_exhausted");
+		const processes = await executor.execute(manifest(workspaceRoot, { executable: "/bin/sh", argv: ["-c", "sleep 10 & sleep 10 & wait"], limits: { maxProcesses: 1 } }), new AbortController().signal);
+		expect(processes.status).toBe("resource_exhausted");
+	}, 10_000);
+
+	it("kills parser descendants and removes temporary output when the Host is forcibly terminated", async () => {
+		const pidFile = join(workspaceRoot, "parser.pid");
+		const job = manifest(workspaceRoot, { executable: "/bin/sh", argv: ["-c", `echo $$ > "${pidFile}"; sleep 30 & wait`], writable: [workspaceRoot], limits: { timeoutMs: 60_000 } });
+		const code = `import { MacOsSeatbeltSandboxedToolExecutor } from ${JSON.stringify(resolve("server/runtime/macOsSeatbeltSandboxedToolExecutor.ts"))}; await new MacOsSeatbeltSandboxedToolExecutor({workspaceRoot:${JSON.stringify(workspaceRoot)}}).execute(${JSON.stringify(job)}, new AbortController().signal);`;
+		const host = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { stdio: "ignore" });
+		try {
+			for (let i = 0; i < 200 && !existsSync(pidFile); i++) await delay(20);
+			expect(existsSync(pidFile)).toBe(true);
+			const parser = Number(readFileSync(pidFile, "utf8").trim());
+			const exited = once(host, "exit"); host.kill("SIGKILL"); await exited;
+			for (let i = 0; i < 100 && existsSync(job.paths.temporaryDirectory); i++) await delay(20);
+			expect(existsSync(job.paths.temporaryDirectory)).toBe(false);
+			let gone = false;
+			for (let i = 0; i < 100; i++) {
+				try { process.kill(parser, 0); } catch { gone = true; break; }
+				await delay(20);
+			}
+			expect(gone).toBe(true);
+		} finally { if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL"); }
+	}, 10_000);
 
 	it("fails closed when domain allowlisting has no trusted Host proxy", async () => {
 		const executor = new MacOsSeatbeltSandboxedToolExecutor({ workspaceRoot });

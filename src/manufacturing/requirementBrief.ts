@@ -69,16 +69,20 @@ const requirementFactAliases: Record<ManufacturingIndustry, Record<string, strin
 	},
 };
 
+// Optional intake details; absence never implies a production specification.
+export const optionalPackagingFacts = ["material_structure", "material_thickness", "printing_process", "surface_finish", "closure_type", "valve_requirement"] as const;
+export const packagingFactKeys: readonly string[] = [...requiredRequirementFacts.print, ...optionalPackagingFacts];
+
 export function normalizeRequirementFactKey(
 	industry: ManufacturingIndustry,
 	key: string,
 ): string | undefined {
 	const normalized = key.trim().toLowerCase().replaceAll(/[^a-z0-9]+/g, "_").replaceAll(/^_+|_+$/g, "");
-	if (requiredRequirementFacts[industry].includes(normalized)) return normalized;
+	if (packagingFactKeys.includes(normalized)) return normalized;
 	return requirementFactAliases[industry][normalized];
 }
 
-const canonicalRequirementFactKeys = [...new Set(Object.values(requiredRequirementFacts).flat())];
+const canonicalRequirementFactKeys = packagingFactKeys;
 
 export const requirementBriefOutputSchema = {
 	type: "object",
@@ -136,7 +140,7 @@ export function createRequirementBrief(input: {
 		.map(({ unit, ...fact }) => unit === undefined ? fact : { ...fact, unit });
 	const missingRequiredFacts = required.filter((key) => !facts.some((fact) => fact.key === key));
 	const hasUnverifiedRequired = facts.some(
-		(fact) => required.includes(fact.key) && fact.status !== "verified",
+		(fact) => fact.status !== "verified",
 	);
 	return {
 		schemaVersion: "requirement-brief.v1",
@@ -255,7 +259,7 @@ export function evaluateRequirementBrief(value: unknown): RequirementBriefEvalua
 	const required = industry ? requiredRequirementFacts[industry] : [];
 	if (industry) {
 		for (const key of observedFactKeys) {
-			if (!required.includes(key)) issue("unsupported_fact", `Fact ${key} is not canonical for ${industry}`);
+			if (!packagingFactKeys.includes(key)) issue("unsupported_fact", `Fact ${key} is not canonical for ${industry}`);
 		}
 	}
 	const missing = required.filter((key) => !observedFactKeys.includes(key));
@@ -275,7 +279,7 @@ export function evaluateRequirementBrief(value: unknown): RequirementBriefEvalua
 	)) issue("invalid_assumptions", "Assumptions must be non-empty strings");
 
 	const unverifiedRequired = facts.filter(
-		(fact) => required.includes(String(fact.key)) && fact.status !== "verified",
+		(fact) => fact.status !== "verified",
 	);
 	const expectedNextAction = missing.length > 0
 		? "clarify"

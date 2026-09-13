@@ -122,6 +122,7 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 		if ((request.attachments?.length ?? 0) > 8 || request.attachments?.some((attachment) => attachment.data)) {
 			throw new RuntimeFailure("invalid_output", "Runtime accepts up to 8 image references and no inline image data", false);
 		}
+		if (request.limits && [request.limits.maxIterations, request.limits.maxToolExecutions, request.limits.maxInputTokens].some((value) => !Number.isInteger(value) || value < 1)) throw new RuntimeFailure("invalid_output", "Runtime limits must be positive integers", false);
 		const timeout = new AbortController();
 		let timedOut = false;
 		const timer = setTimeout(() => {
@@ -264,9 +265,9 @@ export class BlackxAgentRuntime implements AgentRuntimePort {
 				audit: this.options.audit,
 				executions: this.executions,
 				sandboxedToolExecutor: this.options.sandboxedToolExecutor,
-				maxIterations: this.options.maxIterations,
-				maxToolExecutions: this.options.maxToolExecutions,
-				maxInputTokens: this.options.maxInputTokens,
+				maxIterations: request.limits ? Math.min(request.limits.maxIterations, this.options.maxIterations ?? 32) : this.options.maxIterations,
+				maxToolExecutions: request.limits ? Math.min(request.limits.maxToolExecutions, this.options.maxToolExecutions ?? 64) : this.options.maxToolExecutions,
+				maxInputTokens: request.limits ? Math.min(request.limits.maxInputTokens, this.options.maxInputTokens ?? 100_000) : this.options.maxInputTokens,
 				compactTriggerTokens: this.options.compactTriggerTokens,
 				compactTargetTokens: this.options.compactTargetTokens,
 				now: this.now,

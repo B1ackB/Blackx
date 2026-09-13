@@ -1,10 +1,17 @@
+import { serveFrontend } from "./staticFrontend";
+import { ModelSettings, SettingsError } from "./modelSettings";
+import { TaskNames } from "./runtime/taskNames";
+import { recoverCompletedTurn } from "./runtime/recoverCompletedTurn";
+import { AgentPlanStore } from "./enterprise/agentPlanStore";
+import { AgentPlanWorkflow } from "./enterprise/agentPlanWorkflow";
+import { PlanError } from "../src/enterprise/agentPlan";
 import { deliveryHtml, deliveryMarkdown, type RequirementDelivery } from "../src/manufacturing/requirementDelivery";
 import { AssetInspectionService } from "./runtime/assetInspection";
 import { MacOsSeatbeltSandboxedToolExecutor } from "./runtime/macOsSeatbeltSandboxedToolExecutor";
 import { LocalAccess } from "./localAccess";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { createServer as createViteServer } from "vite";
+
 import { ProposalRunEngine } from "../src/enterprise/proposalRunEngine";
 import type { RuntimeTurnRequest } from "../src/runtime/contracts";
 import { RuntimeFailure } from "../src/runtime/contracts";
@@ -42,7 +49,15 @@ import { researchSourceTool } from "./runtime/researchTools";
 import { createProjectSourceReadTool } from "./runtime/requirementTools";
 import { RequirementBriefWorker } from "./manufacturing/requirementBriefWorker";
 import { RequirementBriefWorkspaceApiController } from "./manufacturing/requirementBriefApi";
+import { configureLocalData, ensureLocalDataVersion, lockLocalData, within } from "./localData";
 
+const modelSettings = new ModelSettings(resolve(process.env.PACKX_SETTINGS_PATH ?? ".packx-settings.json"), { ...process.env });
+modelSettings.apply(process.env);
+const localData = configureLocalData(process.env);
+if (within(localData.root, modelSettings.path)) throw new Error("private_settings_must_be_outside_business_data");
+const releaseLocalData = lockLocalData(localData.root);
+process.once("exit", releaseLocalData);
+ensureLocalDataVersion(localData.root);
 const port = Number(process.env.BLACKX_PORT ?? 5173);
 const localAccess = new LocalAccess(port);
 const eventStore = new FileEnterpriseEventStore(
@@ -80,8 +95,8 @@ const workspaceRoot = resolve(process.env.BLACKX_WORKSPACE_ROOT ?? ".");
 const conversationFiles = new ConversationFileService(resolve(process.env.BLACKX_FILE_STORE_PATH ?? ".blackx-data/files"), (scope) => {
 	if (scope.tenantId !== localAccess.identity.tenantId || scope.workspaceId !== localAccess.identity.workspaceId || scope.actorId !== localAccess.identity.actorId) throw new TaskFileError("file_scope_denied", "本机文件仅供当前 Host 用户访问", 403);
 	if (!agentState.getSession({ ...scope, sessionId: scope.runId })) throw new TaskFileError("conversation_not_found", "会话已删除或不存在", 404);
-}, undefined, [resolve(".blackx-data"), ...[process.env.BLACKX_AGENT_STATE_PATH, process.env.BLACKX_EVENT_STORE_PATH, process.env.BLACKX_ARTIFACT_STORE_PATH, process.env.BLACKX_ATTACHMENT_STORE_PATH, process.env.BLACKX_STAGE_JOB_QUEUE_PATH, process.env.BLACKX_CRON_SCHEDULE_PATH, process.env.BLACKX_INSPECTION_CACHE_PATH].filter((path): path is string => !!path).map((path) => resolve(path))], workspaceRoot);
-const assetInspection = new AssetInspectionService(requirementBriefEngine, conversationAttachments, new MacOsSeatbeltSandboxedToolExecutor({ workspaceRoot }), workspaceRoot, undefined, process.env.BLACKX_INSPECTION_CACHE_PATH);
+}, undefined, [modelSettings.path, localData.root, resolve(".blackx-data"), ...[process.env.BLACKX_AGENT_STATE_PATH, process.env.BLACKX_EVENT_STORE_PATH, process.env.BLACKX_ARTIFACT_STORE_PATH, process.env.BLACKX_ATTACHMENT_STORE_PATH, process.env.BLACKX_STAGE_JOB_QUEUE_PATH, process.env.BLACKX_CRON_SCHEDULE_PATH, process.env.BLACKX_INSPECTION_CACHE_PATH].filter((path): path is string => !!path).map((path) => resolve(path))], workspaceRoot);
+const assetInspection = new AssetInspectionService(requirementBriefEngine, conversationAttachments, new MacOsSeatbeltSandboxedToolExecutor({ workspaceRoot, protectedPaths: [localData.root, modelSettings.path] }), workspaceRoot, undefined, process.env.BLACKX_INSPECTION_CACHE_PATH);
 const services = createRuntime(process.env, {
 	sandboxedToolExecutor: assetInspection,
 	tools: [
@@ -103,6 +118,7 @@ const services = createRuntime(process.env, {
 	resolveImageAttachment: async (scope, attachment) => conversationAttachments.resolveImage(scope, attachment),
 });
 const { runtime, state: agentState } = services;
+const taskNames = new TaskNames(resolve(process.env.BLACKX_AGENT_STATE_PATH!, "task-names.sqlite"));
 const conversationApi = new ConversationApiController(
 	runtime,
 	agentState,
@@ -110,7 +126,25 @@ const conversationApi = new ConversationApiController(
 	undefined,
 	[...automationToolNames, ...conversationFileToolNames, "document_read"],
 	conversationAttachments,
+	(scope) => planWorkflow.assertChatAllowed(scope),
+	taskNames,
+	(scope) => planStore.read(scope).versions.at(-1)?.objective,
 );
+const planStore = new AgentPlanStore(resolve(process.env.BLACKX_AGENT_STATE_PATH ?? ".blackx-data/agent", "plans.sqlite"));
+const planWorkflow = new AgentPlanWorkflow(planStore, stageJobQueue, runtime, {
+	readInput: (scope) => {
+		const session = agentState.getSession({ ...scope, sessionId: scope.runId });
+		if (!session) throw new PlanError("conversation_not_found", 404);
+		const messages = session.messages.filter((m) => (m.role === "user" || m.role === "assistant") && !m.durable && !m.toolCalls?.length).slice(-8).map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
+		const attachments = conversationAttachments.list({ ...scope, conversationId: scope.runId }).slice(-8).map(({ name, sourceRef, sha256 }) => ({ name, sourceRef, sha256 }));
+		return { revision: session.revision, context: JSON.stringify({ messages, attachments }) };
+	},
+	readTools: ["file_list", "file_read", "document_read"],
+	executionTools: [...conversationFileToolNames, "document_read"],
+	instructions: ["你是 Packx 包装行业助手，仅处理包装售前和跟单任务。尺寸、数量、材料、价格和生产参数必须有权威来源或人工确认；模型建议保持未验证。", "document_read 可读取附件 sourceRef 的最后一段 attachmentId 或本地绝对路径。读取截断、扫描件和未支持格式时明确报告限制。"],
+	cancelJob: (jobId, scope) => { stageJobScheduler.cancel(jobId, scope); },
+	recoverResult: (scope, sessionId, key) => recoverCompletedTurn(agentState, scope, sessionId, key),
+});
 const stageJobOutbox = new StageJobOutbox(proposalEngine, eventStore, stageJobQueue);
 const requirementBriefOutbox = new StageJobOutbox(requirementBriefEngine, eventStore, stageJobQueue);
 const cronDispatcher = new CronDispatcher(cronScheduleStore, stageJobQueue);
@@ -142,9 +176,11 @@ const stageJobScheduler = new StageJobScheduler(
 		handlers: {
 			proposal: (lease, signal, assertActive) => proposalWorker.executeLease(lease, signal, assertActive),
 			"requirement-brief": (lease, signal, assertActive) => requirementBriefWorker.executeLease(lease, signal, assertActive),
+			"plan-subagents": (lease, signal, assertActive) => planWorkflow.execute(lease, signal, assertActive),
 			"conversation-background": (lease, signal, assertActive) => backgroundConversationWorker.execute(lease, signal, assertActive),
 		},
 		dispatchOutbox: () => {
+			planWorkflow.reconcile();
 			conversationDeletion.reconcile(localAccess.identity);
 			stageJobOutbox.dispatchOne();
 			requirementBriefOutbox.dispatchOne();
@@ -177,6 +213,8 @@ const requirementBriefWorkspaceApi = new RequirementBriefWorkspaceApiController(
 	requirementBriefOutbox,
 	stageJobScheduler,
 	conversationAttachments,
+	undefined,
+	(scope) => planStore.read(scope),
 );
 const proposalWorkerApi = new ProposalWorkerApiController(
 	stageJobScheduler,
@@ -186,8 +224,11 @@ const proposalWorkerApi = new ProposalWorkerApiController(
 );
 let stopStageJobScheduler = () => {};
 const server = createServer();
-const vite = await createViteServer({
-	server: { middlewareMode: true, hmr: { server } },
+const vite = process.env.BLACKX_PRODUCTION === "1" ? undefined : await (await import("vite")).createServer({
+	server: {
+		middlewareMode: true, hmr: { server },
+		fs: { deny: ["**/.git/**", "**/.env", "**/.env.*", "**/*.{crt,pem}", "**/.packx-settings.json*", "**/.blackx-data/**", "**/.blackx-tool-inputs/**", modelSettings.path, ...[localData.root, ...Object.values(localData.paths)].flatMap((path) => [path, `${path}/**`])] },
+	},
 	appType: "spa",
 });
 
@@ -333,6 +374,12 @@ server.on("request", async (request, response) => {
 		request.headers["x-blackx-actor-id"] = localAccess.identity.actorId;
 	}
 
+	if (url.pathname === "/api/model-settings" && ["GET", "PUT"].includes(request.method ?? "")) {
+		try {
+			json(response, 200, request.method === "GET" ? modelSettings.view() : modelSettings.save(await readJson(request), localAccess.identity.actorId));
+		} catch (error) { json(response, error instanceof SettingsError ? error.status : 400, { code: error instanceof SettingsError ? error.code : "settings_save_failed" }); }
+		return;
+	}
   if (request.method === "GET" && url.pathname === "/api/runtime/health") {
     json(response, 200, await runtime.health());
     return;
@@ -602,6 +649,25 @@ server.on("request", async (request, response) => {
 			const runId = brief ? (brief.body as { requirementBrief?: { runId: string } }).requirementBrief?.runId : conversationId;
 			json(response, 200, runId ? services.telemetry.view({ ...localAccess.identity, runId }) : { configuredModel: services.telemetry.configuredModel, calls: [], retentionLimit: services.telemetry.retentionLimit, truncated: false });
 		} catch { json(response, 503, { code: "model_metrics_unavailable", message: "模型统计暂时不可用" }); }
+		return;
+	}
+
+	const planMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/plan$/);
+	if (planMatch) {
+		const conversationId = planMatch[1];
+		const access = conversationApi.get(conversationApiContext(request), conversationId);
+		if (access.status !== 200) { json(response, access.status, access.body); return; }
+		try {
+			const scope = { ...localAccess.identity, runId: conversationId };
+			if (request.method === "GET") json(response, 200, { plan: planWorkflow.read(scope) });
+			else if (request.method === "POST") {
+				const body = await readJson(request);
+				if (conversationApi.isActive({ ...scope, sessionId: conversationId })) throw new PlanError("turn_in_progress");
+				if ((await runtime.health()).adapter !== "blackx-agent") throw new PlanError("real_provider_required", 503);
+				if (conversationApi.isActive({ ...scope, sessionId: conversationId })) throw new PlanError("turn_in_progress");
+				json(response, 200, { plan: planWorkflow.command(scope, localAccess.identity.actorId, body) });
+			} else json(response, 405, { code: "method_not_allowed" });
+		} catch (error) { json(response, error instanceof PlanError ? error.status : 503, { code: error instanceof PlanError ? error.code : "plan_unavailable" }); }
 		return;
 	}
 
@@ -881,12 +947,17 @@ server.on("request", async (request, response) => {
 	}
 
 	const conversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
-	if ((request.method === "GET" || request.method === "DELETE") && conversationMatch) {
+	if ((request.method === "GET" || request.method === "DELETE" || request.method === "PATCH") && conversationMatch) {
 		let conversationId: string;
 		try {
 			conversationId = decodeURIComponent(conversationMatch[1]);
 		} catch {
 			json(response, 400, { code: "invalid_conversation_id" });
+			return;
+		}
+		if (request.method === "PATCH") {
+			try { const result = conversationApi.rename(conversationApiContext(request), conversationId, await readJson(request), url.searchParams.get("language") === "en" ? "en" : "zh"); json(response, result.status, result.body); }
+			catch { json(response, 400, { code: "invalid_task_name" }); }
 			return;
 		}
 		const result = request.method === "DELETE"
@@ -999,6 +1070,7 @@ server.on("request", async (request, response) => {
 		return;
 	}
 
+  if (!vite) { await serveFrontend(url.pathname, response); return; }
   vite.middlewares(request, response, () => {
     json(response, 404, { message: "Not found" });
   });
@@ -1015,4 +1087,10 @@ server.listen(port, "127.0.0.1", () => {
 server.on("close", () => {
 	stopStageJobScheduler();
 	sqliteStageJobQueue?.close();
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
+	stopStageJobScheduler();
+	planStore.close();
+	taskNames.close();
+	process.exit(0);
 });

@@ -22,7 +22,9 @@ import { ConversationApiController } from "../runtime/conversationApi";
 import { StageJobOutbox } from "../workers/stageJobOutbox";
 import { StageJobScheduler } from "../workers/stageJobScheduler";
 
-export class ProposalWorkspaceValidationError extends Error {}
+export class ProposalWorkspaceValidationError extends Error {
+	constructor(message: string, readonly code?: string) { super(message); }
+}
 
 class ConversationAccessError extends Error {
 	constructor(readonly response: ConversationApiResponse) {
@@ -119,11 +121,11 @@ export interface ArtifactWorkspaceOptions {
 	evaluationArtifactId: string;
 	protectedFactKeys?: readonly string[];
 	assertWritable?: (state: ProposalRunState) => void;
-	startFacts?: (
+	prepareStart?: (
 		payload: unknown,
 		conversation: ConversationView,
 		scope: AggregateScope,
-	) => ArtifactWorkspaceStartFact[];
+	) => { facts: ArtifactWorkspaceStartFact[]; brief?: string; briefSourceType?: FactSourceType };
 }
 
 const proposalWorkspaceOptions: ArtifactWorkspaceOptions = {
@@ -180,14 +182,15 @@ export class ProposalWorkspaceApiController {
 			this.options.assertWritable?.(this.engine.load(scope));
 			const actorId = requiredId(context.actorId, "actorId");
 			const messages = conversation.messages.filter((message) => message.role === "user");
-			if (messages.length === 0) {
+			const prepared = this.options.prepareStart?.(payload, conversation, scope);
+			if (messages.length === 0 && !prepared?.brief) {
 				throw new ProposalWorkspaceValidationError("Conversation has no user message to propose from");
 			}
-			const brief = messages.map((message) => message.content).join("\n\n");
+			const brief = prepared?.brief ?? messages.map((message) => message.content).join("\n\n");
 			if (brief.length > 32_000) {
 				throw new ProposalWorkspaceValidationError("Conversation brief is too large");
 			}
-			const extraStartFacts = this.options.startFacts?.(payload, conversation, scope) ?? [];
+			const extraStartFacts = prepared?.facts ?? [];
 			const correlationId = `${id}:${this.options.stageId}`;
 			let state = this.engine.load(scope);
 			if (state.aggregateVersion === 0) {
@@ -215,7 +218,7 @@ export class ProposalWorkspaceApiController {
 					key: "customer_brief",
 					value: brief,
 					status: "unverified" as const,
-					sourceType: "user_input" as const,
+					sourceType: prepared?.briefSourceType ?? "user_input" as const,
 					sourceRef,
 				},
 				...extraStartFacts,
@@ -534,7 +537,7 @@ export class ProposalWorkspaceApiController {
 		} catch (error) {
 			if (error instanceof ConversationAccessError) return error.response;
 			if (error instanceof ProposalWorkspaceValidationError) {
-				return { status: 400, body: { code: this.options.requestErrorCode, message: error.message } };
+				return { status: 400, body: { code: error.code ?? this.options.requestErrorCode, message: error.message } };
 			}
 			if (error instanceof EnterpriseKernelError) {
 				const status = error.code === "aggregate_access_denied"

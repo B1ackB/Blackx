@@ -1,3 +1,5 @@
+import type { TaskNames } from "./taskNames";
+import { PlanError } from "../../src/enterprise/agentPlan";
 import type { AgentMessage } from "../../src/agent/contracts";
 import type { AgentRuntimePort, RuntimeFailureCode } from "../../src/runtime/contracts";
 import { RuntimeFailure } from "../../src/runtime/contracts";
@@ -115,7 +117,29 @@ export class ConversationApiController {
 		private readonly nextId: () => string = () => crypto.randomUUID(),
 		private readonly allowedTools: readonly string[] = [],
 		private readonly attachments?: FileConversationAttachmentStore,
+		private readonly assertChatAllowed?: (scope: AgentSessionScope) => void,
+		private readonly names?: TaskNames,
+		private readonly planObjective?: (scope: AgentSessionScope) => string | undefined,
 	) {}
+
+	private view(session: StoredAgentSession, language: ConversationLanguage = "zh"): ConversationView {
+		const original = view(session, language);
+		const name = this.names?.get(session);
+		const objective = this.planObjective?.(session);
+		return { ...original, nameRevision: name?.nameRevision ?? 0, title: name?.name ?? (objective ? objective.slice(0, 100) : original.title), searchText: objective ?? "", preview: objective ? objective.slice(0, 100) : original.preview };
+	}
+
+	rename(context: ConversationApiContext, conversationId: unknown, payload: unknown, language: ConversationLanguage = "zh"): ConversationApiResponse {
+		try {
+			const target = scope(context, conversationId);
+			const session = this.sessions.getSession(target);
+			if (!session || !this.names || !target.sessionId.startsWith("conversation-")) return { status: 404, body: { code: "conversation_not_found" } };
+			this.names.set(target, payload, id(context.actorId, "actorId"));
+			return { status: 200, body: { conversation: this.view(session, language) } };
+		} catch (error) { return this.failure(error, "conversation_rename_failed"); }
+	}
+
+	isActive(scope: AgentSessionScope): boolean { return this.activeTurns.has(`${scope.tenantId}\u0000${scope.workspaceId}\u0000${scope.sessionId}`); }
 
 	list(context: ConversationApiContext, language: ConversationLanguage = "zh"): ConversationApiResponse {
 		try {
@@ -125,13 +149,14 @@ export class ConversationApiController {
 				.listSessions({ tenantId, workspaceId })
 				.filter((session) => session.sessionId.startsWith("conversation-") && session.runId === session.sessionId)
 				.map((session) => {
-					const conversation = view(session, language);
+					const conversation = this.view(session, language);
 					return {
 						conversationId: conversation.conversationId,
 						title: conversation.title,
 						preview: conversation.preview,
 						updatedAt: conversation.updatedAt,
 						messageCount: conversation.messages.length,
+						nameRevision: conversation.nameRevision, searchText: conversation.searchText,
 					};
 				});
 			return { status: 200, body: { conversations } };
@@ -144,7 +169,7 @@ export class ConversationApiController {
 		try {
 			const conversationId = `conversation-${this.nextId()}`;
 			const created = this.sessions.createSession(scope(context, conversationId), this.now());
-			return { status: 201, body: { conversation: view(created, language) } };
+			return { status: 201, body: { conversation: this.view(created, language) } };
 		} catch (error) {
 			return this.failure(error, "conversation_create_failed");
 		}
@@ -154,7 +179,7 @@ export class ConversationApiController {
 		try {
 			const session = this.sessions.getSession(scope(context, conversationId));
 			return session
-				? { status: 200, body: { conversation: view(session, language) } }
+				? { status: 200, body: { conversation: this.view(session, language) } }
 				: { status: 404, body: { code: "conversation_not_found" } };
 		} catch (error) {
 			return this.failure(error, "conversation_read_failed");
@@ -220,6 +245,7 @@ export class ConversationApiController {
 		try {
 			if (!record(payload)) throw new ConversationValidationError("message payload must be an object");
 			const target = scope(context, conversationId);
+			this.assertChatAllowed?.(target);
 			const actorId = id(context.actorId, "actorId");
 			const messageId = id(payload.messageId, "messageId");
 			const content = text(payload.content);
@@ -246,6 +272,7 @@ export class ConversationApiController {
 			if (health.adapter !== "blackx-agent") {
 				return { status: 503, body: { code: "real_provider_required" } };
 			}
+			this.assertChatAllowed?.(target);
 			const existing = this.sessions.getSession(target);
 			if (!existing) return { status: 404, body: { code: "conversation_not_found" } };
 			const userIndex = existing.messages.findIndex((message) => message.messageId === messageId);
@@ -258,7 +285,7 @@ export class ConversationApiController {
 					return { status: 409, body: { code: "message_conflict" } };
 				}
 				const completed = existing.messages.slice(userIndex + 1).some((message) => message.role === "assistant" && !message.durable && !message.toolCalls?.length && message.content.trim().length > 0);
-				if (completed) return { status: 200, body: { conversation: view(existing), duplicate: true } };
+				if (completed) return { status: 200, body: { conversation: this.view(existing), duplicate: true } };
 				if (!options.retryIncomplete) return { status: 409, body: { code: "turn_incomplete" } };
 			}
 			activeKey = `${target.tenantId}\u0000${target.workspaceId}\u0000${target.sessionId}`;
@@ -318,7 +345,7 @@ export class ConversationApiController {
 			return {
 				status: 200,
 				body: {
-					conversation: view(updated),
+					conversation: this.view(updated),
 					execution: {
 						executionId: result.executionId,
 						contextSnapshotId: result.contextSnapshotId,
@@ -334,6 +361,7 @@ export class ConversationApiController {
 	}
 
 	private failure(error: unknown, fallbackCode: string): ConversationApiResponse {
+		if (error instanceof PlanError) return { status: error.status, body: { code: error.code } };
 		if (error instanceof ConversationValidationError) {
 			return { status: 400, body: { code: "invalid_conversation_request", message: error.message } };
 		}
