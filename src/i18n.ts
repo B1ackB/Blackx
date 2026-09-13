@@ -32,7 +32,7 @@ export function statusFor(language: Language, key: string, fallback: string): st
 }
 
 const errors: Record<string, [string, string]> = {
-	runtime_unavailable: ["无法连接 Blackx 服务端，请检查服务是否启动。", "Cannot connect to Blackx. Check that the server is running."],
+	runtime_unavailable: ["无法连接 Packx 服务端，请检查服务是否启动。", "Cannot connect to Packx. Check that the server is running."],
 	real_provider_required: ["请先配置并启动实际模型服务。", "Configure and start a live model service first."],
 	local_access_denied: ["本地会话校验失败，请使用服务端显示的本机地址。", "Local session verification failed. Use the local address shown by the server."],
 	conversation_not_found: ["会话已删除或不存在，请选择其他会话。", "This conversation was deleted or does not exist. Select another conversation."],

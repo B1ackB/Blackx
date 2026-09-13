@@ -33,7 +33,7 @@ const usage = {
 	reasoningOutputTokens: 0,
 };
 
-describe("Blackx Agent Runtime contract", () => {
+describe("Packx Agent Runtime contract", () => {
 	it("aborts approval waits and prevents late approval from executing a stopped turn", async () => {
 		let release!: (value: { approved: boolean; approvalId: string }) => void;
 		let approvalSignal: AbortSignal | undefined;

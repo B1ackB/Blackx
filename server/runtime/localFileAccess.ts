@@ -28,7 +28,7 @@ export class LocalFileAccess {
 	private protected(path: string): void {
 		if (["/", "/System", "/Library", "/dev", "/etc", "/private/etc", "/proc", "/sys"].some((root) => path === root || (root !== "/" && inside(root, path)))) deny("系统目录不能通过文件工具访问");
 		if (path.split(sep).some((part) => part.startsWith(".")) || /\.(pem|key|p12|pfx|keychain|keychain-db)$/i.test(path)) deny("隐藏目录、凭据和密钥文件不可通过文件工具访问");
-		if (this.protectedPaths.some((root) => inside(resolve(root), path))) deny("Blackx 内部数据、审批和已批准交付目录不可通过本地文件工具访问");
+		if (this.protectedPaths.some((root) => inside(resolve(root), path))) deny("Packx 内部数据、审批和已批准交付目录不可通过本地文件工具访问");
 	}
 	locations() {
 		return { homeDirectory: realpathSync(homedir()), workingDirectory: realpathSync(this.workspaceRoot), ...Object.fromEntries(["Documents", "Desktop"].filter((name) => existsSync(join(homedir(), name))).map((name) => [`${name.toLowerCase()}Directory`, realpathSync(join(homedir(), name))])) };

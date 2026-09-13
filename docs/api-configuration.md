@@ -39,12 +39,12 @@
 
 ## 1. 配置原则
 
-Blackx 当前支持两种 Runtime 模式：
+Packx 当前支持两种 Runtime 模式：
 
 | 模式 | 用途 | 所需 Secret |
 | --- | --- | --- |
 | `fake` | 常规离线测试与固定 Eval；Web Conversation API 会拒绝发送 | 无 |
-| `anthropic` | Blackx Agent Core 直连 Anthropic Messages 端点 | `ANTHROPIC_API_KEY` |
+| `anthropic` | Packx Agent Core 直连 Anthropic Messages 端点 | `ANTHROPIC_API_KEY` |
 
 API Key 只能进入服务端进程环境或 Secret Manager，不应：
 
@@ -66,7 +66,7 @@ API Key 只能进入服务端进程环境或 Secret Manager，不应：
 - Tool Use 与 `POST /v1/messages/count_tokens`（完整运行及 Contract Eval 会使用）；
 - 你选择的模型 ID。
 
-`ANTHROPIC_BASE_URL` 应填写服务根地址，不要以 `/v1` 结尾。Blackx 会自行追加 `/v1/messages`。
+`ANTHROPIC_BASE_URL` 应填写服务根地址，不要以 `/v1` 结尾。Packx 会自行追加 `/v1/messages`。
 
 例如官方端点的根地址形式为：
 
@@ -84,7 +84,7 @@ export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
 export ANTHROPIC_MODEL="deepseek-v4-flash"
 ```
 
-DeepSeek 默认返回 thinking block。Blackx 将完整 assistant content 作为 Provider opaque state 保存，并在同一模型的 Tool Loop 下一轮原样回传；不会把 thinking 内容提升为权威事实或暴露到 `model.after`、Runtime 响应和 Artifact。用于 ContextSnapshot 的内部 `model.before` 事件包含该状态，日志型 Hook 必须丢弃它。
+DeepSeek 默认返回 thinking block。Packx 将完整 assistant content 作为 Provider opaque state 保存，并在同一模型的 Tool Loop 下一轮原样回传；不会把 thinking 内容提升为权威事实或暴露到 `model.after`、Runtime 响应和 Artifact。用于 ContextSnapshot 的内部 `model.before` 事件包含该状态，日志型 Hook 必须丢弃它。
 
 ## 3. 在本机安全注入 Anthropic 配置
 
@@ -104,10 +104,10 @@ npm run dev
 `read -s` 输入时终端不会显示 Key。服务启动后，预期看到类似：
 
 ```text
-Blackx listening on http://127.0.0.1:5173 (blackx-agent)
+Packx listening on http://127.0.0.1:5173 (blackx-agent)
 ```
 
-`blackx-agent` 表示 Agent Loop、Hook、Context、Skill 和 Compact 由 Blackx 自研 Core 驱动；模型请求由 Anthropic Provider Adapter 发出。
+`blackx-agent` 表示 Agent Loop、Hook、Context、Skill 和 Compact 由 Packx 自研 Core 驱动；模型请求由 Anthropic Provider Adapter 发出。
 
 ## 4. 健康检查
 
@@ -200,7 +200,7 @@ unset BLACKX_RUNTIME_MODE
 完成环境配置后，只需告诉开发 Agent：
 
 ```text
-Anthropic API 环境变量已配置完成，请执行 Blackx Agent Core Online Eval。
+Anthropic API 环境变量已配置完成，请执行 Packx Agent Core Online Eval。
 ```
 
 不要在消息中附带 Key。执行时只验证变量是否存在，只报告“已设置/未设置”，不得打印变量值。

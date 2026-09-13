@@ -176,7 +176,7 @@ function App() {
 	useEffect(() => {
 		localStorage.setItem("blackx-language", language);
 		document.documentElement.lang = language === "en" ? "en" : "zh-CN";
-		document.title = language === "en" ? "Blackx · Packaging Workspace" : "Blackx · 包装需求工作区";
+		document.title = language === "en" ? "Packx · Packaging Workspace" : "Packx · 包装需求工作区";
 	}, [language]);
 
 	useEffect(() => {
@@ -719,9 +719,9 @@ function App() {
 			<button className="drawer-backdrop" aria-label={en ? "Close sidebar" : "关闭侧栏"} onClick={() => { setReviewOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); }} />
 			<aside className="sidebar">
 				<div className="brand-lockup">
-					<span className="brand-mark" aria-hidden="true">Bx</span>
+					<span className="brand-mark" aria-hidden="true">Px</span>
 					<div>
-						<strong>Blackx</strong>
+						<strong>Packx</strong>
 						<span>{en ? "Packaging Workspace" : "包装工作台"}</span>
 					</div>
 				</div>
@@ -767,8 +767,8 @@ function App() {
 				<header className="topbar">
 					<button className="panel-toggle" aria-label={en ? "Toggle conversation sidebar" : "切换会话侧栏"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
 					<div>
-						<span className="eyebrow">BLACKX WORKSPACE</span>
-						<h1>{active ? displayConversationTitle(active.title) : (en ? "Blackx conversation" : "Blackx 会话")}</h1>
+						<span className="eyebrow">PACKX WORKSPACE</span>
+						<h1>{active ? displayConversationTitle(active.title) : (en ? "Packx conversation" : "Packx 会话")}</h1>
 					</div>
 					<button className="panel-toggle review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen(!reviewOpen)}>{en ? "Workspace" : "工作区"} · {{ requirement: en ? "Requirements" : "需求单", models: en ? "Models" : "模型", files: en ? "Files" : "文件" }[panelTab]}</button>
 				</header>
@@ -788,10 +788,10 @@ function App() {
 						<div className="message-list">
 							{active.messages.map((message) => (
 								<article key={message.messageId} className={`message ${message.role}`}>
-									<div className="avatar">{message.role === "assistant" ? "Bx" : en ? "You" : "你"}</div>
+									<div className="avatar">{message.role === "assistant" ? "Px" : en ? "You" : "你"}</div>
 									<div className="message-content">
 										<div className="message-meta">
-											<strong>{message.role === "assistant" ? "Blackx" : en ? "You" : "你"}</strong>
+											<strong>{message.role === "assistant" ? "Packx" : en ? "You" : "你"}</strong>
 											<time>{displayTime(message.createdAt, language)}</time>
 										</div>
 										<Markdown text={message.content} language={language} />
@@ -812,7 +812,7 @@ function App() {
 							))}
 							{(replyRunning || hasActiveBackgroundTask) && (
 								<article className="message assistant thinking">
-									<div className="avatar">Bx</div>
+									<div className="avatar">Px</div>
 									<div>
 										<span>{hasActiveBackgroundTask ? en ? "A background task is running; you can switch conversations." : "后台任务正在执行，可以切换会话" : progressLabel(activity)}</span>
 										{activity?.partialText && !hasActiveBackgroundTask ? <Markdown text={activity.partialText} language={language} /> : <div className="thinking-dots"><i /><i /><i /></div>}
@@ -822,9 +822,9 @@ function App() {
 						</div>
 					) : (
 						<div className="empty-state">
-							<span className="empty-mark">Bx</span>
+							<span className="empty-mark">Px</span>
 							<h2>{en ? "Start a new packaging request" : "开始一个新的包装需求任务"}</h2>
-							<p>{en ? "Upload reference material and describe what you need delivered. Blackx organises the request, flags missing information, and creates a requirement brief you can review and export." : "上传资料，描述你要交付什么。Blackx 会整理需求、标出缺失信息，生成可核对与导出的需求单。"}</p>
+							<p>{en ? "Upload reference material and describe what you need delivered. Packx organises the request, flags missing information, and creates a requirement brief you can review and export." : "上传资料，描述你要交付什么。Packx 会整理需求、标出缺失信息，生成可核对与导出的需求单。"}</p>
 							{!active ? <button className="secondary-action" onClick={() => void createConversation()} disabled={deleting}>{en ? "Start a conversation" : "开始新会话"}</button> : <div className="prompt-grid">
 								<button onClick={() => setDraft(en ? "I need a 500 g coffee bean packaging bag. Please help me identify the information that needs confirmation first." : "我想做一款500克咖啡豆包装袋，请先帮我梳理需要确认的信息。")}>{en ? "Coffee packaging request" : "咖啡豆包装需求"}</button>
 								<button onClick={() => setDraft(en ? "I need custom folding cartons for skincare products. Please help me confirm the carton type, dimensions, quantity, and delivery details." : "我想定制一批护肤品包装纸盒，请先帮我梳理盒型、尺寸、数量和交付信息。")}>{en ? "Skincare carton request" : "护肤品纸盒需求"}</button>
@@ -881,7 +881,7 @@ function App() {
 							rows={2}
 							placeholder={hasActiveBackgroundTask
 								? en ? "You can send again after the background task completes" : "当前会话的后台任务完成后可继续发送"
-								: realProvider ? en ? "Message Blackx…" : "发送消息给 Blackx…" : en ? "Connect a live model API first" : "请先连接实际模型 API"}
+								: realProvider ? en ? "Message Packx…" : "发送消息给 Packx…" : en ? "Connect a live model API first" : "请先连接实际模型 API"}
 							disabled={!active || !realProvider || replyRunning || hasActiveBackgroundTask}
 							aria-label={en ? "Conversation input" : "对话输入"}
 						/>

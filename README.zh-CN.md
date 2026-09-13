@@ -1,10 +1,14 @@
-# Blackx
+# Packx
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Blackx 是面向**包装企业售前与跟单人员**的本地 Agent 工作台。项目使用自研、行业无关的 Agent Core，通过工作流层管理有来源的事实、版本化需求单、审批和中断恢复。
+Packx 是面向**包装企业售前与跟单人员**的本地 Agent 工作台。项目使用自研、行业无关的 Agent Core，通过工作流层管理有来源的事实、版本化需求单、审批和中断恢复。
 
 当前是可以在本机运行、阅读实现的工程原型，尚未达到生产 SaaS 或桌面安装包的交付阶段。产品范围仅限包装行业，代码中的 `print` 标识为兼容已有数据而保留。
+
+Packx 原名 Blackx。界面和项目名称已更新；现有 `BLACKX_*` 环境变量、`.blackx-data/` 数据目录及内部协议标识继续沿用，已有配置无需迁移。GitHub 仓库地址目前仍为 `B1ackB/Blackx`，历史 ADR 和验证记录保留当时名称。
+
+面向开发者的定位、演示设计、贡献入口与四周执行计划见[开发者参与指南](docs/developer-community-guide.md)。其中的招募、Issue、演示与社区建设事项是待执行计划，不代表已上线能力。
 
 ## 可以做什么
 
@@ -31,8 +35,8 @@ Blackx 是面向**包装企业售前与跟单人员**的本地 Agent 工作台�
 ## 安装
 
 ```bash
-git clone https://github.com/B1ackB/Blackx.git
-cd Blackx
+git clone https://github.com/B1ackB/Blackx.git Packx
+cd Packx
 # 如果使用 nvm：
 nvm install
 nvm use
@@ -81,7 +85,7 @@ npm run dev
 
 `npm run dev` 自动读取 `.env`，已有终端环境变量优先。`.env` 已被 Git 忽略。密钥只能放在服务端配置中，不要放进消息、提交到仓库或写入 `VITE_` 变量。此启动脚本向服务端进程加载 `.env`；在线评测脚本仍需通过终端环境注入 Provider 变量。
 
-当前 Adapter 使用 Anthropic Messages 协议，包括流式输出和工具调用；完整 Runtime 也会调用 Token Count。`ANTHROPIC_BASE_URL` 填服务根地址，Blackx 会追加 `/v1/messages` 和 `/v1/messages/count_tokens`，不能直接替换成 OpenAI Chat Completions 端点。“模型已配置”只表示配置已加载，不代表端点已经通过所有能力验证。详见 [API 配置指南](docs/api-configuration.md) 与 [兼容性说明](docs/anthropic-compatibility.md)。
+当前 Adapter 使用 Anthropic Messages 协议，包括流式输出和工具调用；完整 Runtime 也会调用 Token Count。`ANTHROPIC_BASE_URL` 填服务根地址，Packx 会追加 `/v1/messages` 和 `/v1/messages/count_tokens`，不能直接替换成 OpenAI Chat Completions 端点。“模型已配置”只表示配置已加载，不代表端点已经通过所有能力验证。详见 [API 配置指南](docs/api-configuration.md) 与 [兼容性说明](docs/anthropic-compatibility.md)。
 
 真实请求可能产生模型服务费用。选中文档的内容及模型输入可能被发送给配置的 Provider；本地解析不等于连接真实模型时仍然完全离线。
 

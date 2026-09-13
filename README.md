@@ -1,10 +1,14 @@
-# Blackx
+# Packx
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Blackx is a local Agent workspace for **packaging presales and order follow-up**. It combines a self-built, industry-neutral Agent Core with a workflow layer that manages sourced facts, versioned requirement briefs, approvals, and recovery.
+Packx is a local Agent workspace for **packaging presales and order follow-up**. It combines a self-built, industry-neutral Agent Core with a workflow layer that manages sourced facts, versioned requirement briefs, approvals, and recovery.
 
 The project is an engineering prototype you can run and inspect locally. It is not a production SaaS or a packaged desktop application. The current product focuses on packaging; the `print` domain identifier is retained for compatibility.
+
+Packx was previously named Blackx. The interface and package name now use Packx; existing `BLACKX_*` environment variables, `.blackx-data/` storage and internal protocol identifiers remain compatible without migration. The GitHub repository is still `B1ackB/Blackx`. Historical ADRs and evidence retain their original names.
+
+See the [developer participation guide](docs/developer-community-guide.md) (Chinese) for positioning, demo design, contribution paths and a four-week execution plan. Recruitment, issues, demos and community setup described there are planned work, not shipped capabilities.
 
 ## What you can do
 
@@ -31,8 +35,8 @@ The native document reader uses Swift and macOS Seatbelt. Other platforms do not
 ## Install
 
 ```bash
-git clone https://github.com/B1ackB/Blackx.git
-cd Blackx
+git clone https://github.com/B1ackB/Blackx.git Packx
+cd Packx
 # If you use nvm:
 nvm install
 nvm use
@@ -81,7 +85,7 @@ Open **http://127.0.0.1:5173**. This single command builds the native reader and
 
 `npm run dev` automatically reads `.env`; existing shell environment variables take precedence. `.env` is ignored by Git. Keep keys server-side and never put them in messages, committed files, or `VITE_` variables. This startup script injects `.env` into the server process; online evaluation scripts expect exported provider variables.
 
-The provider adapter uses Anthropic Messages, including streaming and tools; the full runtime also uses token counting. `ANTHROPIC_BASE_URL` is the service root: Blackx appends `/v1/messages` and `/v1/messages/count_tokens`. An OpenAI Chat Completions endpoint is not interchangeable. A “configured” status does not prove the endpoint supports every required capability. See the [configuration guide](docs/api-configuration.md) and [compatibility notes](docs/anthropic-compatibility.md) (currently Chinese).
+The provider adapter uses Anthropic Messages, including streaming and tools; the full runtime also uses token counting. `ANTHROPIC_BASE_URL` is the service root: Packx appends `/v1/messages` and `/v1/messages/count_tokens`. An OpenAI Chat Completions endpoint is not interchangeable. A “configured” status does not prove the endpoint supports every required capability. See the [configuration guide](docs/api-configuration.md) and [compatibility notes](docs/anthropic-compatibility.md) (currently Chinese).
 
 Real requests can incur provider charges. Selected document contents and model inputs may be sent to the configured provider; local parsing does not make real-model operation fully offline.
 

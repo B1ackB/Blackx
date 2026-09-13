@@ -11,7 +11,7 @@ export const sealingBagEvalFixture = {
 		actorId: "eval-runner",
     idempotencyKey: "eval-sealing-bag-001-turn-1",
     input: [
-      "你是 Blackx Print 的阶段内对话助手。",
+      "你是 Packx Print 的阶段内对话助手。",
       "只把候选回复改写成简洁自然的中文，并返回 JSON。",
       "不得新增或确认袋型、材料结构、成品尺寸、温度、压力、线速、认证、价格或生产就绪状态。",
       "候选回复：我已经记录内容物为烘焙咖啡豆、目标保质期为十二个月；成品尺寸、数量和工厂设备参数仍待用户或工厂确认。",

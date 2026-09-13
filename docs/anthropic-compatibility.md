@@ -6,13 +6,13 @@
 ## 边界
 
 ```text
-Blackx Agent Core
+Packx Agent Core
 → AgentModelProvider
 → AnthropicModelProvider
 → Anthropic Messages compatible provider
 ```
 
-这是 Runtime Infrastructure Adapter，不是 Blackx 对外 API。`ANTHROPIC_API_KEY` 仅由服务端 Client 使用，不进入 Agent Session、ContextSnapshot、业务 Prompt、Artifact、Event 或浏览器。Agent Loop 由 Blackx 自研 Core 所有；Print Domain 和 Enterprise Layer 不引用 Anthropic DTO。
+这是 Runtime Infrastructure Adapter，不是 Packx 对外 API。`ANTHROPIC_API_KEY` 仅由服务端 Client 使用，不进入 Agent Session、ContextSnapshot、业务 Prompt、Artifact、Event 或浏览器。Agent Loop 由 Packx 自研 Core 所有；Print Domain 和 Enterprise Layer 不引用 Anthropic DTO。
 
 Provider 返回的 `thinking` / `redacted_thinking` content block 作为 opaque `providerState` 与 assistant 消息绑定，进入 Agent Session、ContextSnapshot 和用于快照的内部 `model.before` 事件，并在同一模型的下一次请求中原样回传。它不进入 `model.after`、Runtime 响应或 Artifact；日志型 Hook 必须丢弃该字段。Agent Core 不解析其中内容。
 
@@ -25,7 +25,7 @@ Compact Summarizer 是无 Tool 的辅助调用，显式请求 provider-neutral `
 | system | offline-supported | 映射为 Anthropic 顶层 `system` 文本块 |
 | user / assistant 文本 | offline-supported | 映射为 Messages content text block |
 | Tool schema | offline-supported | Tool Schema 映射为 `input_schema`，保留名称、描述和 strict |
-| Tool Call / Result | offline-supported | Blackx Tool Call ID 映射为 `tool_use.id` / `tool_result.tool_use_id` |
+| Tool Call / Result | offline-supported | Packx Tool Call ID 映射为 `tool_use.id` / `tool_result.tool_use_id` |
 | JSON Schema 输出 | provider-dependent | 同时发送 `output_config.format` 和系统约束；消费端仍做 Schema 校验和确定性 fallback |
 | 文本与 Tool Use 输出 | offline-supported | 转成统一的 `AgentModelResponse`，Provider DTO 不向上泄漏 |
 | Usage / Cache / Thinking | online-supported | 映射 input、output、cache read 与 thinking token；带签名的 thinking block 原样跨 Tool Loop 回传 |
@@ -36,7 +36,7 @@ Compact Summarizer 是无 Tool 的辅助调用，显式请求 provider-neutral `
 | PDF、其他文件、音频 | unsupported | 文件可持久化和追溯，但尚无文档解析、OCR 或音频内容块 Adapter |
 | 内建 Web/Search/Computer Tool | unsupported | 首个切片只接受注册的强类型 Tool |
 | 限流、认证、取消 | offline-supported | 401/403、429、Provider 4xx/5xx 和 Abort 边界已映射；尚未逐类注入在线失败 |
-| Session 恢复 | core-owned | Session/ContextSnapshot 由 Blackx Store 恢复，不依赖 Provider 会话 |
+| Session 恢复 | core-owned | Session/ContextSnapshot 由 Packx Store 恢复，不依赖 Provider 会话 |
 
 `offline-supported` 只表示映射和 Contract Test 通过，不表示任何第三方端点已经通过真实连接验证。
 
